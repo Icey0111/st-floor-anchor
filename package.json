@@ -6,5 +6,8 @@
   "description": "SillyTavern floor-anchor chat extension - data layer (M1)",
   "scripts": {
     "test": "node --test tests/model.test.js tests/helpers.test.js"
+  },
+  "dependencies": {
+    "playwright-core": "^1.62.1"
   }
 }

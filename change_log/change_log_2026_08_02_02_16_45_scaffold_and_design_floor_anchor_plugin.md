@@ -1307,3 +1307,37 @@ must be public with `manifest.json` at its root.
 - Public repo verified: `manifest.json` present at root with new metadata.
 - Install URLs: ST and TauriTavern extension managers both accept `https://github.com/Icey0111/st-floor-anchor` (anonymous https Git clone; repo must stay public).
 - Follow-up: after link-installing, remove the old system copy under `public/scripts/extensions/st-floor-anchor` to avoid duplicate extensions.
+
+---
+
+# Local ST regression (absolute-import build) + v0.1.0 release
+
+- Date: 2026-08-02 10:32:48
+- Session: Same conversation; user approved a full local-SillyTavern regression
+  of the absolute-import build, then a clean release.
+
+## Problem / Requirement
+The GitHub-published build uses absolute module imports (host-agnostic). Before
+tagging a release, verify end-to-end in a real SillyTavern 1.18.0 page: plugin
+boot, entry-button placement, panel, roll/edit/delete snapshots, switch,
+prune + renumbering, list filtering, and console health.
+
+## Purpose of Change
+Prove the published artifact works outside the dev sandbox and publish a
+clean, installable v0.1.0 release.
+
+## How It Was Changed
+Research/testing only - no plugin source code changed in this session. A
+throwaway headless-Chrome regression harness was built (gitignored):
+- [D:\stplugin\.regression\regression.mjs L1-L380](file:///D:/stplugin/.regression/regression.mjs#L1) - playwright-core harness: seeds a throwaway character + `test-main` chat with `br_000` meta, then drives the real UI (entry button, panel, regenerate, edit mode, delete, switch, prune) and asserts state via `data-branch-id`, `getCurrentChatId()` and chat content; deletes the character in `finally`
+- `D:\stplugin\.regression\shots\01-panel-open.png` ... `06-final-tree.png` - step screenshots
+- [D:\stplugin\.gitignore L1-L6](file:///D:/stplugin/.gitignore#L1) - `.regression/` ignored
+
+## Result
+- 21/21 regression checks passed: plugin boot, button between "..." and pencil,
+  panel toggle, roll -> br_000-1, edit -> br_000-2, delete -> br_000-3,
+  switch to br_000-1 (pre-roll content), switch back to root (edited content),
+  prune br_000-2 + renumber br_000-3 -> br_000-2, native lists hide `[FA]`
+  while internal scan sees them, no plugin/module console errors.
+- Test character and chats cleaned up after the run; no user data touched.
+- Release `v0.1.0` tagged and published on the repo.
