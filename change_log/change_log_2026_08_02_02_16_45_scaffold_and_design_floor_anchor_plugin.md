@@ -1269,3 +1269,41 @@ Follow-ups: implement the absolute-import switch, sync to
 32/32 tests green, then verify on a real TauriTavern instance (list-filter
 behaviour over the route-shim responses, panel open/roll/delete/switch/prune
 regression).
+
+---
+
+# Publish to GitHub: link-installable extension (absolute imports + repo push)
+
+- Date: 2026-08-02 09:20:00
+- Session: Same conversation; user asked whether the plugin can be uploaded
+  to a GitHub repo and installed by URL.
+
+## Problem / Requirement
+Make the Floor Anchor plugin installable via a GitHub repository link in both
+SillyTavern and TauriTavern extension managers.
+
+## Purpose of Change
+Both hosts serve link-installed extensions from
+`/scripts/extensions/third-party/<folder>/...` (ST confirmed in
+`extensions.js` installExtension: extension name becomes
+`third-party/${folderName}`), which is one directory level deeper than the
+plugin's current "system extension" deployment. The cross-tree relative
+imports must become absolute before a link install can work, and the repo
+must be public with `manifest.json` at its root.
+
+## How It Was Changed
+- [D:\stplugin\src\index.js L3, L13](file:///D:/stplugin/src/index.js#L3) - relative imports to `/scripts/st-context.js` and `/script.js` (absolute, host-agnostic)
+- [D:\stplugin\src\settings.js L10-L11](file:///D:/stplugin/src/settings.js#L10) - `/scripts/extensions.js` + `/script.js` absolute imports
+- [D:\stplugin\src\actions\hooks.js L10](file:///D:/stplugin/src/actions/hooks.js#L10) - `/script.js` absolute import
+- [D:\stplugin\src\store\chat-api.js L11-L24](file:///D:/stplugin/src/store/chat-api.js#L11) - `/script.js`, `/scripts/group-chats.js`, `/scripts/extensions.js` absolute imports
+- [D:\stplugin\manifest.json L2-L5](file:///D:/stplugin/manifest.json#L2) - added `version` / `author` / `description` for TauriTavern extension-manager UI
+- [D:\stplugin\.gitignore L1-L5](file:///D:/stplugin/.gitignore#L1) - ignore `.tmp-tt/` research clone
+- Repo published: `git init -b main`, initial commit `60b1568`, `gh repo create st-floor-anchor --public --push` -> https://github.com/Icey0111/st-floor-anchor
+- Deployed copy synced: `D:\SillyTavern\public\scripts\extensions\st-floor-anchor\` (manifest + src)
+
+## Result
+- `npm test` passes 32/32 after the import switch; remaining `../` imports are intra-extension only.
+- Local ST server returns 200 for `/script.js`, `/scripts/st-context.js`, `/scripts/extensions.js`, `/scripts/group-chats.js` and the extension entry module.
+- Public repo verified: `manifest.json` present at root with new metadata.
+- Install URLs: ST and TauriTavern extension managers both accept `https://github.com/Icey0111/st-floor-anchor` (anonymous https Git clone; repo must stay public).
+- Follow-up: after link-installing, remove the old system copy under `public/scripts/extensions/st-floor-anchor` to avoid duplicate extensions.
