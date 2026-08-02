@@ -1,0 +1,10 @@
+{
+  "name": "st-floor-anchor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SillyTavern floor-anchor chat extension - data layer (M1)",
+  "scripts": {
+    "test": "node --test tests/model.test.js tests/helpers.test.js"
+  }
+}

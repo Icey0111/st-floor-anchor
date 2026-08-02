@@ -1,0 +1,294 @@
+/**
+ * Branch/snapshot panel. Renders the PanelIndex as a tree; switching a node
+ * is the rollback operation (switch chat). Snapshots can be pruned.
+ */
+import { parseBranchId } from '../model/branches.js';
+
+export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {}) {
+  const root = document.createElement('div');
+  root.id = 'stfloor-panel';
+  root.className = 'stfloor-panel';
+  root.style.display = 'none';
+
+  root.innerHTML = `
+    <div class="stfloor-panel-header">
+      <span class="stfloor-panel-title">Floor Anchor</span>
+      <input class="stfloor-panel-search" type="search" placeholder="Search branches..." title="Filter by id / reason / preview text">
+      <button class="stfloor-panel-btn stfloor-refresh" title="Rescan branch files">Refresh</button>
+      <button class="stfloor-panel-btn stfloor-close" title="Close panel">X</button>
+    </div>
+    <div class="stfloor-panel-body"></div>
+  `;
+
+  const body = root.querySelector('.stfloor-panel-body');
+  root.querySelector('.stfloor-refresh').addEventListener('click', () => onRefresh?.());
+  root.querySelector('.stfloor-close').addEventListener('click', () => { root.style.display = 'none'; onClose?.(); });
+
+  // Tree navigation state: `expanded` holds ids explicitly expanded beyond
+  // the default two visible levels (root + its direct children).
+  const expanded = new Set();
+  let searchTerm = '';
+  let currentIndex = null;
+  const searchInput = root.querySelector('.stfloor-panel-search');
+  searchInput.addEventListener('input', () => {
+    searchTerm = searchInput.value;
+    if (currentIndex) render(currentIndex);
+  });
+
+  /**
+   * Enable the marquee only when the text really overflows the box, and bound
+   * the scroll range by the box edges: translateX(0) shows the text start at
+   * the left boundary, the final state shows the text end at the right
+   * boundary (no blank overscroll). Must run while the panel is visible -
+   * display:none reports zero sizes.
+   */
+  function applyPreviewScroll() {
+    for (const row of body.querySelectorAll('.stfloor-node')) {
+      const box = row.querySelector('.stfloor-node-preview');
+      const inner = row.querySelector('.stfloor-node-preview-inner');
+      if (!box || !inner) continue;
+      // border(1) + padding-left(6) are not part of the content area.
+      // 2px tolerance avoids marquee flicker on borderline fits (sub-pixel).
+      // Content area = clientWidth minus left/right borders (1+1) and
+      // left/right padding (8+8).
+      const distance = (box.clientWidth - 18) - (inner.textContent ? inner.scrollWidth : 0);
+      if (distance < -2) {
+        inner.classList.add('stfloor-marquee');
+        inner.style.setProperty('--stfloor-scroll-distance', `${distance}px`);
+      } else {
+        inner.classList.remove('stfloor-marquee');
+        inner.style.removeProperty('--stfloor-scroll-distance');
+      }
+    }
+  }
+
+  function render(index) {
+    if (!index) {
+      body.innerHTML = '<div class="stfloor-empty">No branch data yet.<br>Roll or delete a message to create a snapshot.</div>';
+      return;
+    }
+    const nodes = [...index.nodes.values()];
+    if (!nodes.length) {
+      body.innerHTML = '<div class="stfloor-empty">No branch data yet.<br>Roll or delete a message to create a snapshot.</div>';
+      return;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'stfloor-tree';
+
+    // children map for expand/collapse toggles.
+    const childrenByParent = new Map();
+    for (const node of nodes) {
+      const key = node.parent ?? '';
+      if (!childrenByParent.has(key)) childrenByParent.set(key, []);
+      childrenByParent.get(key).push(node.id);
+    }
+    const hasChildren = (id) => (childrenByParent.get(id ?? '')?.length ?? 0) > 0;
+
+    // Tree order: roots first (top), then every branch's children below it,
+    // siblings sorted by their numeric path - never the file-list order.
+    const compareIds = (a, b) => {
+      const pa = parseBranchId(a);
+      const pb = parseBranchId(b);
+      if (!pa && !pb) return String(a).localeCompare(String(b));
+      if (!pa) return 1;
+      if (!pb) return -1;
+      if (pa.root !== pb.root) return Number(pa.root) - Number(pb.root);
+      const len = Math.min(pa.segments.length, pb.segments.length);
+      for (let i = 0; i < len; i++) {
+        if (pa.segments[i] !== pb.segments[i]) return pa.segments[i] - pb.segments[i];
+      }
+      return pa.segments.length - pb.segments.length;
+    };
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const orderedNodes = [];
+    const seen = new Set();
+    const visit = (id) => {
+      if (seen.has(id) || !byId.has(id)) return;
+      seen.add(id);
+      orderedNodes.push(byId.get(id));
+      const kids = (childrenByParent.get(id) ?? []).slice().sort(compareIds);
+      for (const kid of kids) visit(kid);
+    };
+    for (const rootId of (childrenByParent.get('') ?? []).slice().sort(compareIds)) visit(rootId);
+    for (const node of nodes) {
+      if (!seen.has(node.id)) visit(node.id); // orphans / unlinked nodes
+    }
+
+    // Search: matching nodes plus their ancestors (collapse ignored).
+    const query = searchTerm.trim().toLowerCase();
+    const matched = new Set();
+    if (query) {
+      for (const node of nodes) {
+        const hay = `${node.id} ${node.reason} ${node.sourceFloor ?? ''} ${node.preview ?? ''}`.toLowerCase();
+        if (!hay.includes(query)) continue;
+        let cursor = node;
+        while (cursor) {
+          matched.add(cursor.id);
+          cursor = cursor.parent ? index.get(cursor.parent) : null;
+        }
+      }
+    }
+
+    // Visibility: without search, root + its children are always visible;
+    // deeper levels need every ancestor explicitly expanded.
+    const visible = new Set();
+    for (const node of orderedNodes) {
+      const depth = index.getPath(node.id).length - 1;
+      if (query) {
+        if (matched.has(node.id)) visible.add(node.id);
+      } else if (depth <= 1) {
+        visible.add(node.id);
+      } else {
+        const parent = node.parent ? index.get(node.parent) : null;
+        if (parent && visible.has(parent.id) && expanded.has(parent.id)) visible.add(node.id);
+      }
+    }
+
+    for (const node of orderedNodes) {
+      if (!visible.has(node.id)) continue;
+      const depth = index.getPath(node.id).length - 1;
+      const row = document.createElement('div');
+      row.className = 'stfloor-node';
+      row.style.marginLeft = `${depth * 14}px`;
+      row.dataset.branchId = node.id;
+
+      const toggle = document.createElement('button');
+      toggle.className = 'stfloor-node-toggle';
+      toggle.title = expanded.has(node.id) ? 'Collapse subtree' : 'Expand subtree';
+      toggle.textContent = hasChildren(node.id) ? (expanded.has(node.id) ? '▾' : '▸') : '';
+      if (hasChildren(node.id)) {
+        toggle.addEventListener('click', () => {
+          if (expanded.has(node.id)) expanded.delete(node.id);
+          else expanded.add(node.id);
+          render(index);
+        });
+      } else {
+        toggle.disabled = true;
+      }
+
+      const icon = node.kind === 'snapshot' ? '&#128190;' : '&#128172;'; // 💾 / 💬
+      const label = document.createElement('span');
+      label.className = 'stfloor-node-label';
+      label.innerHTML = `${icon} <b>${node.id}</b> <span class="stfloor-node-reason">${node.reason}</span>` +
+        (node.sourceFloor ? ` <span class="stfloor-node-floor">@floor ${node.sourceFloor}</span>` : '');
+
+      const preview = document.createElement('span');
+      preview.className = 'stfloor-node-preview';
+      const previewInner = document.createElement('span');
+      previewInner.className = 'stfloor-node-preview-inner';
+      previewInner.textContent = node.preview || '';
+      if (node.preview) preview.title = node.preview;
+      preview.append(previewInner);
+
+      const actions = document.createElement('span');
+      actions.className = 'stfloor-node-actions';
+
+      const switchBtn = document.createElement('button');
+      switchBtn.className = 'stfloor-node-btn stfloor-switch';
+      switchBtn.title = 'Rollback: switch to this chat';
+      switchBtn.textContent = 'Switch';
+      switchBtn.addEventListener('click', () => {
+        if (node.fileName) {
+          onSwitch?.(node.fileName);
+        } else {
+          console.warn(`[Floor Anchor] cannot switch: no file name for branch ${node.id}`);
+        }
+      });
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'stfloor-node-btn stfloor-delete';
+      deleteBtn.title = 'Prune this snapshot file';
+      deleteBtn.textContent = 'Prune';
+      deleteBtn.addEventListener('click', () => {
+        if (node.fileName) showPruneConfirm(node.id, node.fileName, node.parent);
+      });
+
+      actions.append(switchBtn, deleteBtn);
+      // Preview grows between the label and the buttons, so both vertical
+      // divider lines stay close to their neighbours (label on the left,
+      // buttons on the right).
+      row.append(toggle, label, preview, actions);
+      list.append(row);
+    }
+
+    body.replaceChildren(list);
+    applyPreviewScroll();
+  }
+
+  /**
+   * Secondary prune-confirmation panel.
+   * Layout (per user spec): a small subtle confirm button on top, the
+   * question in the middle, and a large red-white Cancel button at the
+   * bottom. The destructive action stays deliberately understated while the
+   * escape route (Cancel) is prominent.
+   */
+  function showPruneConfirm(branchId, fileName, parentId) {
+    const overlay = document.createElement('div');
+    overlay.className = 'stfloor-confirm-overlay';
+
+    const panel = document.createElement('div');
+    panel.className = 'stfloor-confirm-panel';
+
+    function close() {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+    }
+    function onKey(event) {
+      if (event.key === 'Escape') close();
+    }
+
+    // Step 1: subtle "确认删除" on top, question in the middle, big red
+    // "取消" below. Step 2 (final): small "返回" on top, second question,
+    // big red "最终删除" below - only this button performs the deletion.
+    function renderStep(step) {
+      if (step === 1) {
+        panel.innerHTML = `
+          <button class="stfloor-confirm-yes" title="确认删除该快照">确认删除</button>
+          <div class="stfloor-confirm-text">是否确认删除 ${branchId}？</div>
+          <button class="stfloor-confirm-cancel">取消</button>
+        `;
+        panel.querySelector('.stfloor-confirm-yes').addEventListener('click', () => renderStep(2));
+        panel.querySelector('.stfloor-confirm-cancel').addEventListener('click', close);
+      } else {
+        panel.innerHTML = `
+          <button class="stfloor-confirm-yes stfloor-confirm-yes-left" title="最终确认删除该快照（位置已移动，防止误触）">确认删除</button>
+          <div class="stfloor-confirm-text">再次确认：删除 ${branchId} 后无法恢复，确定最终删除？</div>
+          <button class="stfloor-confirm-cancel">取消</button>
+        `;
+        panel.querySelector('.stfloor-confirm-yes').addEventListener('click', () => {
+          close();
+          if (fileName) onDelete?.(branchId, fileName, parentId);
+        });
+        panel.querySelector('.stfloor-confirm-cancel').addEventListener('click', close);
+      }
+    }
+    renderStep(1);
+
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close();
+    });
+    document.addEventListener('keydown', onKey);
+
+    overlay.append(panel);
+    document.body.append(overlay);
+  }
+
+  function show() {
+    root.style.display = 'flex';
+    requestAnimationFrame(applyPreviewScroll);
+    setTimeout(applyPreviewScroll, 150); // settle after layout/scrollbars
+    console.log('[Floor Anchor] panel shown');
+  }
+  function hide() {
+    root.style.display = 'none';
+    console.log('[Floor Anchor] panel hidden');
+  }
+  function toggle() {
+    if (root.style.display === 'none') show();
+    else hide();
+  }
+
+  document.body.append(root);
+  return { root, render, show, hide, toggle };
+}
