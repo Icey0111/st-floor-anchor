@@ -1,6 +1,6 @@
 {
   "display_name": "Floor Anchor",
-  "version": "0.1.6",
+  "version": "0.1.5",
   "author": "Icey0111",
   "description": "Floor-level branch snapshots & rollback panel for SillyTavern / TauriTavern. Snapshots before roll/delete/edit, stored as native chat files, hidden from ST's built-in chat lists.",
   "loading_order": 50,

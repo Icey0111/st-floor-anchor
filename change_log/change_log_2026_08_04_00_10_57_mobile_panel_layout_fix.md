@@ -222,3 +222,34 @@ bubbles (and their triangles) visible.
   unchanged).
 - Leftover probe test characters cleaned up from the local ST instance.
 - Released as v0.1.6.
+
+---
+
+# Rollback: v0.1.6 reverted back to v0.1.5 behavior
+
+- Date: 2026-08-04 02:00:00
+- Session: Same conversation; user asked to revert the v0.1.6 change (the
+  JS-enforced half-screen cap) back to 0.1.5.
+
+## Problem / Requirement
+The v0.1.6 change (inline `max-height` = 50% viewport set from JS) was not
+wanted after testing. The user asked to restore the v0.1.5 behavior, where the
+mobile half-screen cap comes purely from the CSS media query
+(`min(50dvh, var(--stfloor-max-h, 50dvh))`) with no JS inline override.
+
+## Purpose of Change
+Restore the exact v0.1.5 code state for the panel sizing while keeping the
+audit trail: the v0.1.6 change-log entry stays as immutable history, and this
+entry documents the correction (per project-docs-workflow append-only rules).
+
+## How It Was Changed
+- [D:\stplugin\src\ui\branch-panel.js L125-L150](file:///D:/stplugin/src/ui/branch-panel.js#L125) - removed `applyMobileCap()` and `MOBILE_QUERY` (added in v0.1.6); resize listener, `show()` and init no longer set an inline max-height
+- [D:\stplugin\.regression\mobile-layout-check.mjs L155-L195](file:///D:/stplugin/.regression/mobile-layout-check.mjs#L155) - removed the inline-cap assertion added in v0.1.6 (harness back to the v0.1.5 checks)
+- [D:\stplugin\manifest.json L2](file:///D:/stplugin/manifest.json#L2) - version back to 0.1.5
+- GitHub: v0.1.6 release + tag deleted; v0.1.5 remains the published version
+
+## Result
+- Unit tests: 33/33 pass.
+- Mobile layout regression: 28/28 pass (back to the v0.1.5 assertion set).
+- Desktop regression: 24/24 pass.
+- Deployed copy under `D:\SillyTavern` synced back to the v0.1.5 code.
