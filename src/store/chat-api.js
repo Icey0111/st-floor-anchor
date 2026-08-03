@@ -35,6 +35,7 @@ import {
   getParentId,
   planMigrateLegacyIds,
   planRenumberAfterDelete,
+  resolveTreeRootByChain,
 } from '../model/branches.js';
 import {
   buildSnapshotName,
@@ -58,6 +59,40 @@ function getCurrentAvatarUrl() {
 
 function getMainChatName() {
   return getCurrentChatDetails()?.sessionName ?? characters?.[this_chid]?.chat ?? 'chat';
+}
+
+/**
+ * Persist a corrected `main_chat` into a snapshot file's header so the tree
+ * membership survives reloads. Only called for files whose recorded main_chat
+ * is missing or points at a file that no longer exists.
+ */
+async function persistMainChat(avatarUrl, fileName, mainChat) {
+  try {
+    const getResponse = await fetch('/api/chats/get', {
+      method: 'POST',
+      headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
+      body: JSON.stringify({ ch_name: characters?.[this_chid]?.name ?? '', file_name: fileName, avatar_url: avatarUrl }),
+      cache: 'no-cache',
+    });
+    if (!getResponse.ok) return;
+    const chatJson = await getResponse.json();
+    if (!Array.isArray(chatJson) || !chatJson[0]?.chat_metadata) return;
+    if (chatJson[0].chat_metadata.main_chat === mainChat) return;
+    chatJson[0].chat_metadata.main_chat = mainChat;
+    await fetch('/api/chats/save', {
+      method: 'POST',
+      headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
+      body: JSON.stringify({
+        ch_name: characters?.[this_chid]?.name ?? '',
+        file_name: fileName,
+        chat: chatJson,
+        avatar_url: avatarUrl,
+        force: true,
+      }),
+    });
+  } catch (error) {
+    console.error(`[Floor Anchor] main_chat repair failed for ${fileName}:`, error);
+  }
 }
 
 /**
@@ -342,6 +377,25 @@ export async function scanBranches() {
     }
   }
 
+  // Self-heal stale `main_chat` references (legacy migration artifacts: the
+  // flat-id -> tree migration renamed files but did not rewrite nested
+  // `main_chat`). Resolve the true tree root through the parent chain and
+  // persist the correction so the panel never degrades into a rootless
+  // "branch tree". The currently open chat is skipped - rewriting it races
+  // ST's own saves; the in-memory resolution keeps the panel correct and a
+  // later scan repairs the file once the user leaves it.
+  for (const meta of metas) {
+    const branch = meta?.branch;
+    if (!branch || branch.kind !== 'snapshot') continue;
+    const resolved = resolveTreeRootByChain(metas, meta);
+    if (!resolved || resolved === meta.mainChat) continue; // already valid
+    meta.mainChat = resolved;
+    if (branch.file_name && branch.file_name !== currentFileName) {
+      await persistMainChat(avatarUrl, branch.file_name, resolved);
+      console.log(`[Floor Anchor] repaired main_chat for ${branch.file_name} -> ${resolved}`);
+    }
+  }
+
   // Defensive dedupe: two chat files can carry the same branch id (e.g. a
   // stale save recreated an old snapshot name after a rename). Keep the
   // marker-named file when possible so the panel never crashes on duplicates.
@@ -365,10 +419,15 @@ export async function scanBranches() {
   branchIds.reset();
   const index = PanelIndex.build(uniqueMetas);
   for (const meta of uniqueMetas) branchIds.track(meta.branch.id);
-  if (!index.nodes.size && !currentMeta && currentFileName && names.includes(currentFileName)) {
-    // Plain ST chat without st_floor: expose just the current chat as an
-    // unmanaged root displayed with the unified id br_000 (it is adopted as
-    // br_000 on the next snapshot trigger / metadata flush).
+  // The live chat is always a root: when it is a real chat file (no [FA]
+  // marker) but the built index lost its active node for it (corrupted
+  // metadata, dedupe collision, ...), re-add it as an unmanaged br_000 root
+  // so the panel can never switch to a rootless "branch tree" while the user
+  // stays on the main chat. Plain ST chats (no st_floor at all) hit the same
+  // path and are adopted as br_000 on the next snapshot trigger.
+  const hasLiveRoot = !!currentFileName && !isSnapshotFileName(currentFileName)
+    && [...index.nodes.values()].some((n) => n.kind === 'active' && n.fileName === currentFileName);
+  if (!hasLiveRoot && currentFileName && names.includes(currentFileName) && !isSnapshotFileName(currentFileName)) {
     index.add(createOrphanRootMeta(currentFileName, previews.get(currentFileName) ?? null));
   }
   return index;

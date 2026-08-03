@@ -112,6 +112,91 @@ export function createBranchIdCounter() {
 }
 
 /**
+ * Resolve the undo-tree root file name for a snapshot meta by walking its
+ * parent chain, used when the snapshot's `main_chat` is missing or points at
+ * a file that no longer exists (legacy artifacts left by the flat-id -> tree
+ * migration, which renamed files but did not rewrite nested `main_chat`).
+ *
+ * Rules, in order:
+ *  1. The first snapshot on the chain whose `main_chat` still exists in the
+ *     file list wins (it records the true tree root).
+ *  2. Walking up reaches a snapshot whose parent meta is an ACTIVE root ->
+ *     that root's file name is the tree root.
+ *  3. Fallback: if the character has exactly one active root chat, assume the
+ *     snapshot belongs to it (a snapshot can only be created from some chat).
+ *
+ * @param {Array} metas  all branch metas of the character (file_name is
+ *                       authoritative from the chat list)
+ * @param {object} meta  the snapshot meta to resolve the root for
+ * @returns {string|null} resolved tree root file name
+ */
+export function resolveTreeRootByChain(metas, meta) {
+  const fileNameOf = (m) => m?.branch?.file_name ?? m?.branch?.fileName ?? null;
+  const metaByFileName = new Map();
+  for (const m of metas) {
+    const name = fileNameOf(m);
+    if (name && !metaByFileName.has(name)) metaByFileName.set(name, m);
+  }
+  // A main_chat only counts when it points at an ACTIVE chat file.
+  const validMainChatOf = (m) => {
+    if (typeof m?.mainChat !== 'string' || m.mainChat.length === 0) return null;
+    const target = metaByFileName.get(m.mainChat);
+    return target?.branch.kind === 'active' ? m.mainChat : null;
+  };
+  const activeRoots = metas.filter((m) => m?.branch?.kind === 'active' && fileNameOf(m));
+
+  let cursor = meta;
+  const seen = new Set();
+  while (cursor && cursor.branch.kind === 'snapshot') {
+    const own = validMainChatOf(cursor);
+    if (own) return own;
+
+    const parentId = cursor.branch.parent;
+    if (!parentId || seen.has(parentId)) break;
+    seen.add(parentId);
+
+    // Branch ids are shared across chats (every tree has a br_000 root and
+    // br_000-1, br_000-2, ... children), so a bare id lookup can land in the
+    // WRONG chat's tree. Disambiguate in order of evidence strength.
+    const candidates = metas.filter((m) => m.branch.id === parentId);
+    if (candidates.length === 0) break;
+
+    // 1) A single distinct valid main_chat among the candidates declares the
+    //    tree (legacy artifacts whose own main_chat is stale still inherit
+    //    the tree from a well-formed parent).
+    const distinctValidMain = [...new Set(candidates.map(validMainChatOf).filter(Boolean))];
+    if (distinctValidMain.length === 1) return distinctValidMain[0];
+
+    // 2) File-name lineage: a snapshot file name is built from its parent's
+    //    file name, so the parent's name prefixes the child's name.
+    const currentFile = fileNameOf(cursor);
+    const byPrefix = candidates.filter((m) => {
+      const pf = fileNameOf(m);
+      return !!pf && !!currentFile && currentFile.startsWith(`${pf} - `);
+    });
+    if (byPrefix.length === 1) {
+      const parentMeta = byPrefix[0];
+      if (parentMeta.branch.kind === 'active') return fileNameOf(parentMeta) ?? null;
+      cursor = parentMeta;
+      continue;
+    }
+
+    // 3) A single candidate is unambiguous - follow it.
+    if (candidates.length === 1) {
+      const parentMeta = candidates[0];
+      if (parentMeta.branch.kind === 'active') return fileNameOf(parentMeta) ?? null;
+      cursor = parentMeta;
+      continue;
+    }
+
+    break; // ambiguous parent id across chats
+  }
+  // Fallback: with exactly one active root chat for this character, every
+  // snapshot must belong to it.
+  return activeRoots.length === 1 ? fileNameOf(activeRoots[0]) : null;
+}
+
+/**
  * Per-chat isolation: reduce a character's full branch-meta list to the undo
  * tree the currently open chat belongs to. Every ST chat owns its own tree;
  * all chats share the root id `br_000`, so membership is carried explicitly:
@@ -134,18 +219,30 @@ export function filterMetasToCurrentTree(metas, currentFileName) {
   if (!currentMeta) return { metas: [], rootMeta: null, currentMeta: null };
 
   // The tree root file: the current chat itself when it is a root, otherwise
-  // the `main_chat` recorded on the snapshot it belongs to.
+  // the `main_chat` recorded on the snapshot it belongs to. Legacy snapshots
+  // may carry a missing or stale `main_chat` (pointing at a renamed-away
+  // file); resolve the root by walking the parent chain in that case so the
+  // panel never degrades into a rootless "branch tree".
   const currentRoot = currentMeta.branch.kind === 'active'
     ? (fileNameOf(currentMeta) ?? currentFile)
-    : (typeof currentMeta.mainChat === 'string' ? currentMeta.mainChat : null);
+    : resolveTreeRootByChain(list, currentMeta);
 
   if (!currentRoot) return { metas: [], rootMeta: null, currentMeta };
 
+  // Membership is decided by the RESOLVED root, not the raw `main_chat`:
+  // legacy snapshots with a missing/stale main_chat must still join the tree
+  // their parent chain resolves to.
+  const resolvedRootOf = new Map();
+  for (const meta of list) {
+    if (meta?.branch?.kind === 'snapshot') {
+      resolvedRootOf.set(meta, resolveTreeRootByChain(list, meta));
+    }
+  }
   const treeMetas = list.filter((meta) => {
     if (meta?.branch?.kind === 'active') {
       return fileNameOf(meta) === currentRoot;
     }
-    return typeof meta?.mainChat === 'string' && meta.mainChat === currentRoot;
+    return resolvedRootOf.get(meta) === currentRoot;
   });
   const rootMeta = treeMetas.find((m) => m?.branch?.kind === 'active') ?? null;
   return { metas: treeMetas, rootMeta, currentMeta };

@@ -22,6 +22,7 @@ import {
   replaceBranchIdInFileName,
   ROOT_BRANCH_ID,
   SNAPSHOT_REASONS,
+  resolveTreeRootByChain,
 } from '../src/model/branches.js';
 import { PanelIndex } from '../src/model/panel-index.js';
 import { checkInvariants, validateBranchMeta } from '../src/model/invariants.js';
@@ -343,4 +344,101 @@ test('branches: filterMetasToCurrentTree isolates per-chat undo trees', () => {
   const plain = filterMetasToCurrentTree(metas, 'plain.jsonl');
   assert.equal(plain.metas.length, 0);
   assert.equal(plain.currentMeta, null);
+});
+
+test('branches: stale main_chat resolves to the real root via parent chain', () => {
+  const mk = (id, file, kind, parent, mainChat) => {
+    const meta = {
+      schema: 3,
+      branch: { id, kind, parent, reason: kind === 'active' ? 'root' : 'roll', file_name: file },
+    };
+    if (mainChat) meta.mainChat = mainChat;
+    return meta;
+  };
+
+  // The snapshot's main_chat points at a file that no longer exists (the
+  // flat-id migration renamed it away). Its parent chain must resolve to the
+  // active root chat.
+  const metas = [
+    mk('br_000', 'chatA.jsonl', 'active', null),
+    mk('br_000-1', 'chatA - [FA] roll 1 br_000-1.jsonl', 'snapshot', 'br_000', 'chatA.jsonl'),
+    mk('br_000-2', 'chatA - [FA] edit 2 br_000-2.jsonl', 'snapshot', 'br_000-1', 'chatA - delete 2026-08-02 br_201 [FA]'),
+  ];
+
+  // Direct chain walk: parent br_000-1 has a VALID main_chat -> root.
+  assert.equal(resolveTreeRootByChain(metas, metas[2]), 'chatA.jsonl');
+
+  // filterMetasToCurrentTree must now show the full root tree, not a
+  // rootless orphan branch.
+  const tree = filterMetasToCurrentTree(metas, 'chatA - [FA] edit 2 br_000-2.jsonl');
+  assert.deepEqual(tree.metas.map((m) => m.branch.id).sort(), ['br_000', 'br_000-1', 'br_000-2']);
+  assert.equal(tree.rootMeta.branch.file_name, 'chatA.jsonl');
+});
+
+test('branches: stale main_chat with broken chain falls back to single active root', () => {
+  const mk = (id, file, kind, parent, mainChat) => {
+    const meta = {
+      schema: 3,
+      branch: { id, kind, parent, reason: kind === 'active' ? 'root' : 'roll', file_name: file },
+    };
+    if (mainChat) meta.mainChat = mainChat;
+    return meta;
+  };
+
+  // Parent meta is gone entirely (pruned/renamed) and main_chat is stale;
+  // exactly one active root exists, so the snapshot belongs to it.
+  const metas = [
+    mk('br_000', 'chatA.jsonl', 'active', null),
+    mk('br_000-1', 'chatA - [FA] roll 1 br_000-1.jsonl', 'snapshot', 'br_000', 'chatA - gone [FA]'),
+  ];
+  assert.equal(resolveTreeRootByChain(metas, metas[1]), 'chatA.jsonl');
+  const tree = filterMetasToCurrentTree(metas, 'chatA - [FA] roll 1 br_000-1.jsonl');
+  assert.deepEqual(tree.metas.map((m) => m.branch.id).sort(), ['br_000', 'br_000-1']);
+});
+
+test('branches: main_chat pointing at another snapshot is not trusted as root', () => {
+  const mk = (id, file, kind, parent, mainChat) => {
+    const meta = {
+      schema: 3,
+      branch: { id, kind, parent, reason: kind === 'active' ? 'root' : 'roll', file_name: file },
+    };
+    if (mainChat) meta.mainChat = mainChat;
+    return meta;
+  };
+
+  // A snapshot-of-snapshot whose main_chat points at an EXISTING snapshot
+  // file must still walk up to the active root.
+  const metas = [
+    mk('br_000', 'chatA.jsonl', 'active', null),
+    mk('br_000-1', 'chatA - [FA] roll 1 br_000-1.jsonl', 'snapshot', 'br_000', 'chatA.jsonl'),
+    mk('br_000-1-1', 'chatA - [FA] roll 2 br_000-1-1.jsonl', 'snapshot', 'br_000-1', 'chatA - [FA] roll 1 br_000-1.jsonl'),
+  ];
+  assert.equal(resolveTreeRootByChain(metas, metas[2]), 'chatA.jsonl');
+  const tree = filterMetasToCurrentTree(metas, 'chatA - [FA] roll 2 br_000-1-1.jsonl');
+  assert.deepEqual(tree.metas.map((m) => m.branch.id).sort(), ['br_000', 'br_000-1', 'br_000-1-1']);
+});
+
+test('branches: stale main_chat disambiguates across chats sharing branch ids', () => {
+  const mk = (id, file, kind, parent, mainChat) => {
+    const meta = {
+      schema: 3,
+      branch: { id, kind, parent, reason: kind === 'active' ? 'root' : 'roll', file_name: file },
+    };
+    if (mainChat) meta.mainChat = mainChat;
+    return meta;
+  };
+
+  // Two chats both own br_000 + br_000-1 (ids are per-chat). The stale
+  // snapshot must resolve to test-main (its file-name lineage), never to
+  // test-alt (the first id match).
+  const metas = [
+    mk('br_000', 'test-alt', 'active', null),
+    mk('br_000-1', 'test-alt - [FA] roll 1 br_000-1', 'snapshot', 'br_000', 'test-alt'),
+    mk('br_000', 'test-main', 'active', null),
+    mk('br_000-1', 'test-main - [FA] roll 2026-08-04 br_000-1', 'snapshot', 'br_000', 'test-main'),
+    mk('br_000-4', 'test-main - [FA] stale br_000-4', 'snapshot', 'br_000', 'test-main - gone 2026-08-02 br_201 [FA]'),
+  ];
+  const tree = filterMetasToCurrentTree(metas, 'test-main - [FA] stale br_000-4');
+  assert.equal(tree.rootMeta.branch.file_name, 'test-main');
+  assert.deepEqual(tree.metas.map((m) => m.branch.id).sort(), ['br_000', 'br_000-1', 'br_000-4']);
 });
