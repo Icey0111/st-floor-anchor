@@ -27,15 +27,18 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
   root.querySelector('.stfloor-refresh').addEventListener('click', () => onRefresh?.());
   root.querySelector('.stfloor-close').addEventListener('click', () => { root.style.display = 'none'; onClose?.(); });
 
-  // Tree navigation state: `expanded` holds ids explicitly expanded beyond
-  // the default two visible levels (root + its direct children).
-  const expanded = new Set();
+  // Tree navigation state: per-chat collapse sets. Every chat's root shares
+  // the id `br_000`, so collapse state must be scoped to the chat currently
+  // rendered, otherwise collapsing root in chat A would also collapse chat
+  // B's tree. `currentScope` is the chat file name the panel last rendered.
+  const collapsedByScope = new Map();
+  let currentScope = null;
   let searchTerm = '';
   let currentIndex = null;
   const searchInput = root.querySelector('.stfloor-panel-search');
   searchInput.addEventListener('input', () => {
     searchTerm = searchInput.value;
-    if (currentIndex) render(currentIndex);
+    if (currentIndex) render(currentIndex, currentScope);
   });
 
   // ---------- floating window: centered by default, draggable via header ----------
@@ -160,7 +163,14 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
     }
   }
 
-  function render(index) {
+  function render(index, scopeKey = currentScope ?? '') {
+    // New chat tree: start with a clean view (search + collapse per chat).
+    if (scopeKey !== currentScope) {
+      currentScope = scopeKey;
+      searchTerm = '';
+      searchInput.value = '';
+    }
+    const collapsed = collapsedByScope.get(currentScope) ?? new Set();
     if (!index) {
       body.innerHTML = '<div class="stfloor-empty">No branch data yet.<br>Roll or delete a message to create a snapshot.</div>';
       return;
@@ -228,19 +238,26 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
       }
     }
 
-    // Visibility: without search, root + its children are always visible;
-    // deeper levels need every ancestor explicitly expanded.
+    // Visibility: without search, a node is hidden only when one of its
+    // ANCESTORS is explicitly collapsed (the collapsed node itself stays
+    // visible as the subtree's header). During search, matched nodes and
+    // their ancestors are always shown (collapse ignored).
     const visible = new Set();
     for (const node of orderedNodes) {
-      const depth = index.getPath(node.id).length - 1;
       if (query) {
         if (matched.has(node.id)) visible.add(node.id);
-      } else if (depth <= 1) {
-        visible.add(node.id);
-      } else {
-        const parent = node.parent ? index.get(node.parent) : null;
-        if (parent && visible.has(parent.id) && expanded.has(parent.id)) visible.add(node.id);
+        continue;
       }
+      let cursor = node.parent ? index.get(node.parent) : null;
+      let hidden = false;
+      while (cursor) {
+        if (collapsed.has(cursor.id)) {
+          hidden = true;
+          break;
+        }
+        cursor = cursor.parent ? index.get(cursor.parent) : null;
+      }
+      if (!hidden) visible.add(node.id);
     }
 
     for (const node of orderedNodes) {
@@ -251,15 +268,18 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
       row.style.marginLeft = `${depth * 14}px`;
       row.dataset.branchId = node.id;
 
+      const isCollapsed = collapsed.has(node.id);
       const toggle = document.createElement('button');
       toggle.className = 'stfloor-node-toggle';
-      toggle.title = expanded.has(node.id) ? 'Collapse subtree' : 'Expand subtree';
-      toggle.textContent = hasChildren(node.id) ? (expanded.has(node.id) ? '▾' : '▸') : '';
+      toggle.title = isCollapsed ? 'Expand subtree' : 'Collapse subtree';
+      toggle.textContent = hasChildren(node.id) ? (isCollapsed ? '▸' : '▾') : '';
       if (hasChildren(node.id)) {
         toggle.addEventListener('click', () => {
-          if (expanded.has(node.id)) expanded.delete(node.id);
-          else expanded.add(node.id);
-          render(index);
+          const set = collapsedByScope.get(currentScope) ?? new Set();
+          collapsedByScope.set(currentScope, set);
+          if (set.has(node.id)) set.delete(node.id);
+          else set.add(node.id);
+          render(index, currentScope);
         });
       } else {
         toggle.disabled = true;
@@ -318,6 +338,15 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
 
     body.replaceChildren(list);
     applyPreviewScroll();
+    // The window auto-fits the tree (bounded by max-height): after the size
+    // changes, keep a dragged position clamped inside the viewport (a
+    // centered panel stays centered via the CSS transform).
+    if (root.style.display !== 'none' && panelPos) {
+      applyPosition(panelPos);
+      requestAnimationFrame(() => {
+        if (root.style.display !== 'none' && panelPos) applyPosition(panelPos);
+      });
+    }
   }
 
   /**
@@ -459,7 +488,13 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
   function show() {
     markStMobileShell();
     root.style.display = 'flex';
-    if (!panelPos) centerPanel();
+    if (panelPos) {
+      // Re-clamp a dragged position: the viewport may have changed while the
+      // panel was hidden (rotation, resize, TauriTavern IME inset).
+      applyPosition(panelPos);
+    } else {
+      centerPanel();
+    }
     requestAnimationFrame(applyPreviewScroll);
     setTimeout(applyPreviewScroll, 150); // settle after layout/scrollbars
     console.log('[Floor Anchor] panel shown');

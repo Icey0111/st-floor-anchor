@@ -18,10 +18,11 @@
   transform: translate(-50%, -50%);
   z-index: 2147483000;
   width: 470px;
-  /* Fixed size: the window never grows with the branch tree; overflow
+  /* Auto-fit: the window grows/shrinks with the branch tree (e.g. when a
+     subtree is collapsed), but never exceeds the max height - overflow
      scrolls inside .stfloor-panel-body. */
-  height: 70vh;
-  min-height: 160px;
+  height: auto;
+  min-height: 120px;
   max-height: 70vh;
   box-sizing: border-box;
   display: none;
@@ -401,6 +402,7 @@ body.stfloor-dragging {
   .stfloor-panel {
     width: min(92dvw, 470px);
     max-width: none;
+    min-height: 120px;
     /* Mobile footprint stays around half the screen: at most half the
        viewport height (content scrolls inside). The window is centered and
        draggable; JS clamps it within the safe frame while dragging. */
@@ -412,15 +414,9 @@ body.stfloor-dragging {
       50dvh,
       var(--stfloor-max-h, 50dvh)
     );
-    /* Fixed height on mobile too: cap at half the screen, scroll inside. */
-    height: min(
-      50vh,
-      var(--stfloor-max-h, 50vh)
-    );
-    height: min(
-      50dvh,
-      var(--stfloor-max-h, 50dvh)
-    );
+    /* Auto-fit like desktop: shrink with collapsed subtrees, cap at half
+       the screen, scroll inside. */
+    height: auto;
   }
 
   .stfloor-confirm-overlay {

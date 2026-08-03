@@ -60,7 +60,8 @@ try {
 
   async function refreshPanel() {
     const index = await scanBranches();
-    panel.render(index);
+    // Scope the panel's per-chat UI state (collapse/search) by chat file.
+    panel.render(index, getCurrentChatId() ?? '');
     return index;
   }
 
