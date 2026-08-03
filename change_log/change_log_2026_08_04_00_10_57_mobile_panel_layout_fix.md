@@ -38,3 +38,34 @@ snapshot contract so the host cannot push it off-screen.
   therefore render above the screen. ST's own top-anchored fixed elements are
   unaffected, which is why the app itself looked fine.
 - Released as v0.1.1.
+
+---
+
+# Mobile panel footprint reduced to ~half the screen
+
+- Date: 2026-08-04 00:14:30
+- Session: Same conversation; after v0.1.1 the mobile panel fills the whole
+  phone screen, user asked to shrink it to about half the screen.
+
+## Problem / Requirement
+On mobile the bottom-anchored sheet spans the full width and up to ~90% of
+the viewport height, so with many branch nodes it occupies the entire phone
+screen. The user wants the panel footprint reduced to roughly half the screen.
+
+## Purpose of Change
+Cap the mobile panel at half the viewport height (full width retained, content
+scrolls inside), keeping it inside safe areas and the TauriTavern layout
+clamp. The prune-confirm dialog stays full-screen as a modal.
+
+## How It Was Changed
+- [D:\stplugin\src\style.css L130-L190](file:///D:/stplugin/src/style.css#L130) - mobile `max-height` now `min(50dvh, var(--stfloor-max-h, calc(...)))` (with a 50vh fallback line), so the panel never exceeds half the viewport height even when TauriTavern's JS clamp supplies a taller safe-frame value
+- [D:\stplugin\.regression\mobile-layout-check.mjs L90-L110](file:///D:/stplugin/.regression/mobile-layout-check.mjs#L90) - assertions extended: computed `max-height` <= 55% of viewport and panel area <= ~62% of the screen
+- [D:\stplugin\manifest.json L2](file:///D:/stplugin/manifest.json#L2) - version bumped to 0.1.2
+
+## Result
+- Unit tests: 32/32 pass.
+- Mobile layout regression: 13/13 pass - portrait computed max-height 422px
+  (50dvh of 844), landscape 195px (50dvh of 390); panel fully inside viewport
+  and bottom-anchored in both orientations.
+- Desktop regression: 21/21 pass (no behavior change).
+- Released as v0.1.2.
