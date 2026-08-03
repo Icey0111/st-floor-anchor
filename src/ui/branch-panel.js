@@ -14,6 +14,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
   root.innerHTML = `
     <div class="stfloor-panel-header">
       <span class="stfloor-panel-title">Floor Anchor</span>
+      <button class="stfloor-panel-btn stfloor-panel-gohome" title="Return to the main root chat (you are on a branch snapshot)" style="display: none;">&#10554;&#32;Main</button>
       <input class="stfloor-panel-search" type="search" placeholder="Search branches..." title="Filter by id / reason / preview text">
       <button class="stfloor-panel-btn stfloor-add-message" title="New character message floor (paste text stuck in thinking)">+</button>
       <button class="stfloor-panel-btn stfloor-refresh" title="Rescan branch files">Refresh</button>
@@ -23,8 +24,12 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
   `;
 
   const body = root.querySelector('.stfloor-panel-body');
+  const goHomeBtn = root.querySelector('.stfloor-panel-gohome');
   root.querySelector('.stfloor-add-message').addEventListener('click', () => showComposer());
   root.querySelector('.stfloor-refresh').addEventListener('click', () => onRefresh?.());
+  goHomeBtn.addEventListener('click', () => {
+    if (currentRootFileName && onSwitch) onSwitch(currentRootFileName);
+  });
   root.querySelector('.stfloor-close').addEventListener('click', () => { root.style.display = 'none'; onClose?.(); });
 
   // Tree navigation state: per-chat collapse sets. Every chat's root shares
@@ -33,6 +38,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
   // B's tree. `currentScope` is the chat file name the panel last rendered.
   const collapsedByScope = new Map();
   let currentScope = null;
+  let currentRootFileName = null;
   let searchTerm = '';
   let currentIndex = null;
   const searchInput = root.querySelector('.stfloor-panel-search');
@@ -163,13 +169,17 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
     }
   }
 
-  function render(index, scopeKey = currentScope ?? '') {
+  function render(index, scopeKey = currentScope ?? '', rootFileName = currentRootFileName ?? null) {
     // New chat tree: start with a clean view (search + collapse per chat).
     if (scopeKey !== currentScope) {
       currentScope = scopeKey;
       searchTerm = '';
       searchInput.value = '';
     }
+    currentRootFileName = rootFileName;
+    // The "back to main root" escape hatch is only useful while the user is
+    // on a branch snapshot (the current scope differs from the tree's root).
+    goHomeBtn.style.display = currentRootFileName && currentScope && currentScope !== currentRootFileName ? '' : 'none';
     const collapsed = collapsedByScope.get(currentScope) ?? new Set();
     if (!index) {
       body.innerHTML = '<div class="stfloor-empty">No branch data yet.<br>Roll or delete a message to create a snapshot.</div>';
@@ -286,9 +296,12 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
       }
 
       const icon = node.kind === 'snapshot' ? '&#128190;' : '&#128172;'; // 💾 / 💬
+      const isActive = !!currentScope && node.fileName === currentScope;
+      if (isActive) row.classList.add('stfloor-node-active');
       const label = document.createElement('span');
       label.className = 'stfloor-node-label';
-      label.innerHTML = `${icon} <b>${node.id}</b> <span class="stfloor-node-reason">${node.reason}</span>` +
+      label.innerHTML = `${icon} <b>${node.id}</b>${isActive ? ' <span class="stfloor-node-active-badge">current</span>' : ''}` +
+        ` <span class="stfloor-node-reason">${node.reason}</span>` +
         (node.sourceFloor ? ` <span class="stfloor-node-floor">@floor ${node.sourceFloor}</span>` : '');
 
       const preview = document.createElement('span');

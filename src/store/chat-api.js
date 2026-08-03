@@ -430,6 +430,17 @@ export async function scanBranches() {
   if (!hasLiveRoot && currentFileName && names.includes(currentFileName) && !isSnapshotFileName(currentFileName)) {
     index.add(createOrphanRootMeta(currentFileName, previews.get(currentFileName) ?? null));
   }
+  // Mark the currently open chat's node as active so the panel can show at a
+  // glance whether the user is on the root mainline or on a branch snapshot.
+  let activeId = null;
+  if (currentMeta?.branch?.id) {
+    activeId = currentMeta.branch.id;
+  } else if (index.nodes.size === 1) {
+    activeId = [...index.nodes.keys()][0]; // unmanaged/plain chat fallback root
+  }
+  if (activeId && index.get(activeId)) {
+    index.setActive(activeId);
+  }
   return index;
 }
 

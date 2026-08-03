@@ -60,8 +60,11 @@ try {
 
   async function refreshPanel() {
     const index = await scanBranches();
-    // Scope the panel's per-chat UI state (collapse/search) by chat file.
-    panel.render(index, getCurrentChatId() ?? '');
+    // Scope the panel's per-chat UI state (collapse/search) by chat file and
+    // pass the tree's root file so the panel can offer one-click return to
+    // the main root when the user is on a branch snapshot.
+    const rootNode = [...index.nodes.values()].find((n) => n.kind === 'active' && n.parent === null);
+    panel.render(index, getCurrentChatId() ?? '', rootNode?.fileName ?? null);
     return index;
   }
 
