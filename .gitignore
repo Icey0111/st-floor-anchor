@@ -2,5 +2,9 @@ node_modules/
 backups/
 .tmp-tt/
 .regression/
+# Internal development artifacts - kept local, not part of the public repo
+dev_docs/
+change_log/
+remove/
 *.log
 .DS_Store

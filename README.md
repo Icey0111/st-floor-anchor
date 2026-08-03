@@ -90,7 +90,6 @@ https://github.com/Icey0111/st-floor-anchor/archive/refs/heads/main.zip
 
 ## 给开发者
 
-- 设计文档：`dev_docs/`
 - 单元测试：`npm test`
 - 浏览器回归脚本：`.regression/`（本地用，不入库）
 

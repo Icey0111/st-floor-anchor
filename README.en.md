@@ -94,7 +94,6 @@ Released under the [MIT License](LICENSE).
 
 ## For developers
 
-- Design docs: `dev_docs/`
 - Unit tests: `npm test`
 - Browser regression scripts: `.regression/` (local only, not committed)
 
