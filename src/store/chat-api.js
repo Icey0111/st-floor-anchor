@@ -28,6 +28,7 @@ import { createBranchMeta, readBranchMeta } from '../model/metadata.js';
 import { PanelIndex } from '../model/panel-index.js';
 import {
   ROOT_BRANCH_ID,
+  createOrphanRootMeta,
   createBranchIdCounter,
   filterMetasToCurrentTree,
   getParentId,
@@ -302,8 +303,9 @@ export async function scanBranches() {
   for (const meta of uniqueMetas) branchIds.track(meta.branch.id);
   if (!index.nodes.size && !currentMeta && currentFileName && names.includes(currentFileName)) {
     // Plain ST chat without st_floor: expose just the current chat as an
-    // unmanaged root (it is adopted as br_000 on the next snapshot trigger).
-    index.add({ schema: 3, branch: { id: `orphan_${currentFileName}`, kind: 'active', parent: null, reason: 'root', file_name: currentFileName } });
+    // unmanaged root displayed with the unified id br_000 (it is adopted as
+    // br_000 on the next snapshot trigger / metadata flush).
+    index.add(createOrphanRootMeta(currentFileName));
   }
   return index;
 }

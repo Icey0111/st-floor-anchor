@@ -6,6 +6,28 @@ export const SNAPSHOT_REASONS = ['roll', 'delete', 'edit'];
 /** The root branch id (start of the recursive tree numbering). */
 export const ROOT_BRANCH_ID = 'br_000';
 
+/**
+ * Meta for a plain ST chat that has no st_floor metadata yet (unmanaged).
+ * The panel displays it with the unified root id br_000; the chat is adopted
+ * as a real br_000 root on the next snapshot trigger / metadata save.
+ * The file name is preserved so a rollback switch still targets the chat.
+ *
+ * @param {string} fileName  chat file name (without .jsonl)
+ * @returns {{schema: number, branch: object}}
+ */
+export function createOrphanRootMeta(fileName) {
+  return {
+    schema: 3,
+    branch: {
+      id: ROOT_BRANCH_ID,
+      kind: 'active',
+      parent: null,
+      reason: 'root',
+      file_name: String(fileName ?? ''),
+    },
+  };
+}
+
 /** Matches branch ids of the recursive scheme: br_000, br_000-1, br_000-1-2 ... */
 const BRANCH_ID_RE = /^br_(\d+)((?:-\d+)*)$/;
 

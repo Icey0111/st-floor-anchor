@@ -253,3 +253,54 @@ entry documents the correction (per project-docs-workflow append-only rules).
 - Mobile layout regression: 28/28 pass (back to the v0.1.5 assertion set).
 - Desktop regression: 24/24 pass.
 - Deployed copy under `D:\SillyTavern` synced back to the v0.1.5 code.
+
+---
+
+# v0.1.6: unified br_000 display + verified per-character/per-chat isolation
+
+- Date: 2026-08-04 01:00:58
+- Session: Same conversation; user reported that switching to another
+  character card shows the chat record's raw name instead of br_000, and asked
+  to unify the display and verify isolation across character cards / different
+  chats of the same card.
+
+## Problem / Requirement
+When opening a plain ST chat (no `st_floor` metadata yet), `scanBranches()`
+inserted a fallback node with the id `orphan_<current-file-name>`, so the panel
+showed the raw chat record name (e.g. `orphan_以太界 - 2026-05-05@...`) instead
+of the unified root id `br_000`. The user also asked to confirm the plugin
+really isolates undo trees per character card and per chat (different users of
+the same card).
+
+## Purpose of Change
+Every chat root is now always displayed as `br_000` regardless of whether the
+chat was adopted yet, so the panel never leaks raw chat file names. At the same
+time the active root (the live chat) can no longer be pruned from the panel -
+previously the unmanaged node offered a Prune button that would delete the
+current conversation. Isolation is re-verified at both the unit and browser
+level, including two character cards sharing the exact same chat file name.
+
+## How It Was Changed
+- [src/model/branches.js L15-L40](file:///D:/stplugin/src/model/branches.js#L15-L40) - new pure `createOrphanRootMeta(fileName)` factory: unmanaged chats build an active root node with the unified id `br_000` while keeping the file name for rollback
+- [src/store/chat-api.js L260-L280](file:///D:/stplugin/src/store/chat-api.js#L260-L280) - `scanBranches()` orphan fallback now uses `createOrphanRootMeta(currentFileName)` instead of `orphan_<fileName>`
+- [src/ui/branch-panel.js L180-L205](file:///D:/stplugin/src/ui/branch-panel.js#L180-L205) - Prune button rendered only for `kind === 'snapshot'`; active roots get Switch only (safety: pruning the root would delete the live chat)
+- [tests/model.test.js L90-L110](file:///D:/stplugin/tests/model.test.js#L90-L110) - unit test: orphan root meta uses `br_000`, builds a valid single-root `PanelIndex`, no `orphan_` id
+- [.regression/regression.mjs L30-L95](file:///D:/stplugin/.regression/regression.mjs#L30-L95) - setup seeds a plain chat (`test-plain`, no st_floor) and a second character whose chat file is deliberately named `test-main` (same as character A) with a smaller tree
+- [.regression/regression.mjs L430-L520](file:///D:/stplugin/.regression/regression.mjs#L430-L520) - browser checks: plain chat shows exactly `['br_000']` (no orphan_ prefix); active root has no Prune button; switching to character B's same-name chat shows only its own tree (`br_000,br_000-1`); switching back to character A restores its own tree (`br_000,br_000-1,br_000-2`); both characters cleaned up
+- [.regression/mobile-layout-check.mjs L60-L90](file:///D:/stplugin/.regression/mobile-layout-check.mjs#L60-L90) - seeds a snapshot (`br_000-1`) so the prune-confirm check targets a real snapshot row
+- [.regression/mobile-layout-check.mjs L215-L235](file:///D:/stplugin/.regression/mobile-layout-check.mjs#L215-L235) - mobile harness asserts the active root has no Prune button and clicks Prune on the snapshot row instead
+- [manifest.json L2-L2](file:///D:/stplugin/manifest.json#L2-L2) - version bumped to 0.1.6
+
+## Result
+- Unit tests: 34/34 pass (new orphan-root test included).
+- Desktop regression: 30/30 pass - including "plain chat displays unified
+  br_000 root (no orphan_ prefix)", "active root cannot be pruned", "character
+  B with same chat name shows its own isolated tree", and "switching back to
+  character A restores its own tree".
+- Mobile layout regression: 30/30 pass - root Prune button absent in portrait
+  and simulated-TauriTavern scenarios; prune confirm still contained.
+- Deployed copy under `D:\SillyTavern` synced (manifest 0.1.6).
+- Isolation model confirmed: per-character via avatar-scoped chat scans, and
+  per-chat within a character via `main_chat` + file-name filtering
+  (`filterMetasToCurrentTree`); ST user profiles are separated by data folder.
+- Not released to GitHub yet (local dev version 0.1.6; publish on request).

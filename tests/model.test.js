@@ -12,6 +12,7 @@ import {
   buildSnapshotPlan,
   createBranchIdCounter,
   createBranchIdFactory,
+  createOrphanRootMeta,
   filterMetasToCurrentTree,
   getLastSegment,
   getParentId,
@@ -80,6 +81,22 @@ test('branches: invalid snapshot reason throws', () => {
     () => buildSnapshotPlan({ currentBranchId: 'br_200', reason: 'root', nextBranchId: 'br_301' }),
     TypeError,
   );
+});
+
+test('branches: plain chats display the unified br_000 root id', () => {
+  const meta = createOrphanRootMeta('plain-chat.jsonl');
+  assert.equal(meta.branch.id, ROOT_BRANCH_ID);
+  assert.equal(meta.branch.kind, 'active');
+  assert.equal(meta.branch.parent, null);
+  assert.equal(meta.branch.reason, 'root');
+  assert.equal(meta.branch.file_name, 'plain-chat.jsonl');
+
+  // The orphan meta must build into a valid single-root tree (no orphan_* id).
+  const index = PanelIndex.build([meta]);
+  assert.deepEqual(index.rootIds, [ROOT_BRANCH_ID]);
+  assert.equal(index.orphans.length, 0);
+  assert.equal(index.get(ROOT_BRANCH_ID).fileName, 'plain-chat.jsonl');
+  assert.equal(index.getPath(ROOT_BRANCH_ID).length, 1);
 });
 
 test('branches: recursive id utilities', () => {

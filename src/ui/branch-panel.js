@@ -292,15 +292,21 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
         }
       });
 
-      const deleteBtn = document.createElement('button');
-      deleteBtn.className = 'stfloor-node-btn stfloor-delete';
-      deleteBtn.title = 'Prune this snapshot file';
-      deleteBtn.textContent = 'Prune';
-      deleteBtn.addEventListener('click', () => {
-        if (node.fileName) showPruneConfirm(node.id, node.fileName, node.parent);
-      });
-
-      actions.append(switchBtn, deleteBtn);
+      // Only snapshots can be pruned. The active root is the live chat file;
+      // offering Prune there (especially for unmanaged chats shown as br_000)
+      // would let a misclick delete the conversation itself.
+      if (node.kind === 'snapshot') {
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'stfloor-node-btn stfloor-delete';
+        deleteBtn.title = 'Prune this snapshot file';
+        deleteBtn.textContent = 'Prune';
+        deleteBtn.addEventListener('click', () => {
+          if (node.fileName) showPruneConfirm(node.id, node.fileName, node.parent);
+        });
+        actions.append(switchBtn, deleteBtn);
+      } else {
+        actions.append(switchBtn);
+      }
       // Preview grows between the label and the buttons, so both vertical
       // divider lines stay close to their neighbours (label on the left,
       // buttons on the right).
