@@ -340,3 +340,38 @@ chat's last message text in the panel.
 - Mobile layout regression: 30/30 pass (no layout change).
 - Deployed copy under `D:\SillyTavern` synced; committed and pushed to GitHub
   (main).
+
+---
+
+# Switch/Prune become compact icon-only buttons
+
+- Date: 2026-08-04 01:10:51
+- Session: Same conversation; after Prune was removed from active roots the
+  user noticed only Switch remained on the root row and asked for both actions
+  to become single easy-to-understand symbols that take less space.
+
+## Problem / Requirement
+The row actions were wide text buttons ("Switch" / "Prune"). The user wants
+them replaced by single intuitive icons so the two buttons occupy much less
+horizontal space (and so the missing Prune on the root is not confusingly
+rendered as an empty slot).
+
+## Purpose of Change
+Render each row action as a small FontAwesome icon with a tooltip: a
+history/rollback icon for Switch and a trash icon for Prune. Buttons become
+22x22px squares instead of ~50px text labels; the root row keeps Switch only
+(Prune is intentionally snapshot-only, preventing deletion of the live chat).
+
+## How It Was Changed
+- [src/ui/branch-panel.js L283-L305](file:///D:/stplugin/src/ui/branch-panel.js#L283-L305) - Switch button renders `fa-clock-rotate-left`, Prune renders `fa-trash-can` (titles unchanged, classes `stfloor-switch`/`stfloor-delete` kept so tests/user CSS still target them)
+- [src/style.css L184-L192](file:///D:/stplugin/src/style.css#L184-L192) - `.stfloor-node-btn` becomes a 22x22px inline-flex icon button (centered icon, no padding)
+- [.regression/regression.mjs L260-L275](file:///D:/stplugin/.regression/regression.mjs#L260-L275) - browser assertion: snapshot row actions are FA icons with no leftover text
+
+## Result
+- Unit tests: 34/34 pass.
+- Desktop regression: 32/32 pass - new "node actions are compact icons"
+  assertion passes.
+- Mobile layout regression: 30/30 pass (icon buttons fit the existing
+  half-screen footprint).
+- Deployed copy under `D:\SillyTavern` synced; committed and pushed to GitHub
+  (main).

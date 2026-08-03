@@ -283,7 +283,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
       const switchBtn = document.createElement('button');
       switchBtn.className = 'stfloor-node-btn stfloor-switch';
       switchBtn.title = 'Rollback: switch to this chat';
-      switchBtn.textContent = 'Switch';
+      switchBtn.innerHTML = '<i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i>';
       switchBtn.addEventListener('click', () => {
         if (node.fileName) {
           onSwitch?.(node.fileName);
@@ -299,7 +299,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'stfloor-node-btn stfloor-delete';
         deleteBtn.title = 'Prune this snapshot file';
-        deleteBtn.textContent = 'Prune';
+        deleteBtn.innerHTML = '<i class="fa-solid fa-trash-can" aria-hidden="true"></i>';
         deleteBtn.addEventListener('click', () => {
           if (node.fileName) showPruneConfirm(node.id, node.fileName, node.parent);
         });
