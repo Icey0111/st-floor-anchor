@@ -304,3 +304,39 @@ level, including two character cards sharing the exact same chat file name.
   per-chat within a character via `main_chat` + file-name filtering
   (`filterMetasToCurrentTree`); ST user profiles are separated by data folder.
 - Not released to GitHub yet (local dev version 0.1.6; publish on request).
+
+---
+
+# Plain-chat root now shows the body preview after switching character cards
+
+- Date: 2026-08-04 01:06:39
+- Session: Same conversation; after the unified br_000 display shipped, the
+  user reported that switching to another character card shows no body
+  preview (正文预览) for the current chat.
+
+## Problem / Requirement
+When the currently open chat is a plain ST chat (no `st_floor` metadata yet),
+`scanBranches()` renders it through the orphan fallback. The fallback meta was
+created from scratch without a preview, so the panel showed `br_000` with an
+empty preview area - the body text used to tell branches apart was missing
+until the chat was adopted (debounced metadata save) and re-scanned.
+
+## Purpose of Change
+Give the unmanaged `br_000` root the same derived body preview as managed
+roots, so switching to any character card immediately shows the current
+chat's last message text in the panel.
+
+## How It Was Changed
+- [src/model/branches.js L15-L40](file:///D:/stplugin/src/model/branches.js#L15-L40) - `createOrphanRootMeta(fileName, preview)` now accepts an optional display-only preview
+- [src/store/chat-api.js L65-L105](file:///D:/stplugin/src/store/chat-api.js#L65-L105) - `fetchAllBranchMetas()` computes the preview for every chat file (not only st_floor-managed ones) and returns a `previews` map keyed by file name
+- [src/store/chat-api.js L265-L285](file:///D:/stplugin/src/store/chat-api.js#L265-L285) - orphan fallback passes the current chat's preview into `createOrphanRootMeta`
+- [tests/model.test.js L90-L115](file:///D:/stplugin/tests/model.test.js#L90-L115) - unit test covers the optional preview on orphan root metas
+- [.regression/regression.mjs L505-L515](file:///D:/stplugin/.regression/regression.mjs#L505-L515) - browser check: the plain chat's `br_000` row shows the body preview ("Assistant reply ...")
+
+## Result
+- Unit tests: 34/34 pass.
+- Desktop regression: 31/31 pass - new "plain chat root shows body preview"
+  assertion passes.
+- Mobile layout regression: 30/30 pass (no layout change).
+- Deployed copy under `D:\SillyTavern` synced; committed and pushed to GitHub
+  (main).

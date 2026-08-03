@@ -74,6 +74,7 @@ async function fetchAllBranchMetas(avatarUrl) {
 
   const names = parseChatList(await listResponse.json());
   const metas = [];
+  const previews = new Map(); // file name -> derived preview, incl. plain chats
   const settings = getStFloorSettings();
 
   for (const name of names) {
@@ -86,20 +87,27 @@ async function fetchAllBranchMetas(avatarUrl) {
       });
       if (!getResponse.ok) continue;
       const chatJson = await getResponse.json();
+      // Derived display data (last message body preview) - never persisted.
+      // Computed for every file so plain chats (no st_floor meta) can still
+      // show a preview when the panel renders them as an unmanaged br_000.
+      const preview = computeChatPreview(chatJson, settings.previewMaxLength, { filterBlocks: settings.filterBlocks });
       const meta = metaFromChatJson(chatJson);
       if (meta) {
         // The file list is authoritative: the name inside chat_metadata may be
         // stale after a rename (e.g. the [FA] marker migration below).
         meta.branch.file_name = name;
-        // Derived display data (last message body preview) - never persisted.
-        meta.preview = computeChatPreview(chatJson, settings.previewMaxLength, { filterBlocks: settings.filterBlocks });
+        meta.preview = preview;
       }
-      if (meta) metas.push(meta);
+      if (meta) {
+        metas.push(meta);
+      } else {
+        previews.set(name, preview);
+      }
     } catch {
       // skip unreadable files (e.g. temporary chats)
     }
   }
-  return { names, metas };
+  return { names, metas, previews };
 }
 
 /**
@@ -201,7 +209,7 @@ export async function scanBranches() {
   if (!avatarUrl) return new PanelIndex();
   const currentFileName = getCurrentChatId() ?? null;
 
-  let { names, metas } = await fetchAllBranchMetas(avatarUrl);
+  let { names, metas, previews } = await fetchAllBranchMetas(avatarUrl);
 
   // Per-chat isolation: every ST chat owns its own undo tree; the panel shows
   // only the tree the currently open chat belongs to (all chats share the
@@ -218,7 +226,7 @@ export async function scanBranches() {
   if (legacyMigration.migrated) {
     console.log(`[Floor Anchor] migrating ${legacyMigration.steps.length} legacy branch id(s) to recursive scheme`);
     await applyRenumberSteps(legacyMigration.steps, avatarUrl);
-    ({ names, metas } = await fetchAllBranchMetas(avatarUrl));
+    ({ names, metas, previews } = await fetchAllBranchMetas(avatarUrl));
     tree = filterMetasToCurrentTree(metas, currentFileName);
     treeMetas = tree.metas;
   }
@@ -305,7 +313,7 @@ export async function scanBranches() {
     // Plain ST chat without st_floor: expose just the current chat as an
     // unmanaged root displayed with the unified id br_000 (it is adopted as
     // br_000 on the next snapshot trigger / metadata flush).
-    index.add(createOrphanRootMeta(currentFileName));
+    index.add(createOrphanRootMeta(currentFileName, previews.get(currentFileName) ?? null));
   }
   return index;
 }

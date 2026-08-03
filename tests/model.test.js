@@ -90,12 +90,20 @@ test('branches: plain chats display the unified br_000 root id', () => {
   assert.equal(meta.branch.parent, null);
   assert.equal(meta.branch.reason, 'root');
   assert.equal(meta.branch.file_name, 'plain-chat.jsonl');
+  assert.equal(meta.preview, undefined);
+
+  // An optional derived preview is attached (display-only) so the panel can
+  // show the chat's last body text even before the chat is adopted.
+  const withPreview = createOrphanRootMeta('plain-chat.jsonl', 'Assistant reply one.');
+  assert.equal(withPreview.preview, 'Assistant reply one.');
+  assert.equal(createOrphanRootMeta('x', '').preview, undefined);
 
   // The orphan meta must build into a valid single-root tree (no orphan_* id).
-  const index = PanelIndex.build([meta]);
+  const index = PanelIndex.build([withPreview]);
   assert.deepEqual(index.rootIds, [ROOT_BRANCH_ID]);
   assert.equal(index.orphans.length, 0);
   assert.equal(index.get(ROOT_BRANCH_ID).fileName, 'plain-chat.jsonl');
+  assert.equal(index.get(ROOT_BRANCH_ID).preview, 'Assistant reply one.');
   assert.equal(index.getPath(ROOT_BRANCH_ID).length, 1);
 });
 

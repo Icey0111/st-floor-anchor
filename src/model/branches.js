@@ -12,11 +12,12 @@ export const ROOT_BRANCH_ID = 'br_000';
  * as a real br_000 root on the next snapshot trigger / metadata save.
  * The file name is preserved so a rollback switch still targets the chat.
  *
- * @param {string} fileName  chat file name (without .jsonl)
+ * @param {string} fileName   chat file name (without .jsonl)
+ * @param {string} [preview]  derived body preview (display-only)
  * @returns {{schema: number, branch: object}}
  */
-export function createOrphanRootMeta(fileName) {
-  return {
+export function createOrphanRootMeta(fileName, preview = null) {
+  const meta = {
     schema: 3,
     branch: {
       id: ROOT_BRANCH_ID,
@@ -26,6 +27,10 @@ export function createOrphanRootMeta(fileName) {
       file_name: String(fileName ?? ''),
     },
   };
+  if (typeof preview === 'string' && preview.length > 0) {
+    meta.preview = preview;
+  }
+  return meta;
 }
 
 /** Matches branch ids of the recursive scheme: br_000, br_000-1, br_000-1-2 ... */
