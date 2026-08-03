@@ -375,3 +375,47 @@ history/rollback icon for Switch and a trash icon for Prune. Buttons become
   half-screen footprint).
 - Deployed copy under `D:\SillyTavern` synced; committed and pushed to GitHub
   (main).
+
+---
+
+# v0.1.7: new character message floor composer (salvage text stuck in thinking)
+
+- Date: 2026-08-04 01:45:46
+- Session: Same conversation; user explained that when a reply gets truncated
+  inside the reasoning chain ST keeps the floor non-editable, and asked for a
+  way to directly create a NEW character message floor with that content.
+
+## Problem / Requirement
+When the model only produces reasoning (正文 stuck in thinking) and no final
+body, the character message floor cannot be edited in SillyTavern. The user
+wanted the plugin to let them create a brand-new char floor and paste the
+recovered text into it.
+
+## Purpose of Change
+Add a "new character message" composer to the Floor Anchor panel: paste the
+stuck text, confirm, and a fresh assistant floor is appended to the current
+chat (rendered immediately and persisted). A `rescue` snapshot of the
+pre-append chat is created first, so the append can be rolled back from the
+panel like any other mutation.
+
+## How It Was Changed
+- [src/model/branches.js L6-L12](file:///D:/stplugin/src/model/branches.js#L6-L12) - `'rescue'` added to `SNAPSHOT_REASONS` (already documented in the schema)
+- [src/store/chat-api.js L218-L288](file:///D:/stplugin/src/store/chat-api.js#L218-L288) - new `appendCharacterMessage(text)`: snapshots first (`reason: 'rescue'`), pushes an assistant message (`name = character`, `is_user: false`), renders via ST's `addOneMessage`, then persists with a bounded `saveChat({ force: true })` so the debounced save can never silently drop the floor
+- [src/ui/branch-panel.js L10-L22](file:///D:/stplugin/src/ui/branch-panel.js#L10-L22) - panel header gains a `+` button ("New character message floor")
+- [src/ui/branch-panel.js L405-L460](file:///D:/stplugin/src/ui/branch-panel.js#L405-L460) - composer overlay (textarea + Cancel/Add floor; Ctrl+Enter to add, Esc to cancel; "Adding..." busy state keeps the text if anything fails; Cancel stays available)
+- [src/style.css L250-L335](file:///D:/stplugin/src/style.css#L250-L335) - composer panel styles (textarea, action buttons, mobile/backdrop-compatible)
+- [src/index.js L40-L56](file:///D:/stplugin/src/index.js#L40-L56) - `onAddMessage` wiring: append, then rescan the panel in the background so the composer closes promptly
+- [src/index.js L118-L130](file:///D:/stplugin/src/index.js#L118-L130) - `window.__stFloorAnchor.addCharMessage` exposed for tests
+- [.regression/regression.mjs L550-L620](file:///D:/stplugin/.regression/regression.mjs#L550-L620) - browser checks: append creates an assistant floor with the pasted content and records a `rescue` snapshot branch
+- [.regression/mobile-layout-check.mjs L240-L290](file:///D:/stplugin/.regression/mobile-layout-check.mjs#L240-L290) - mobile harness drives the composer UI and asserts (server-side) that a rescue snapshot file is created and the message persists to the chat file
+- [manifest.json L2-L2](file:///D:/stplugin/manifest.json#L2-L2) - version bumped to 0.1.7
+
+## Result
+- Unit tests: 34/34 pass (snapshot-plan test now also covers `rescue`).
+- Desktop regression: 34/34 pass - append + rescue branch verified.
+- Mobile layout regression: 34/34 pass twice consecutively (composer UI +
+  rescue snapshot + persisted message; assertions are server-side so the
+  harness no longer races ST's save loop).
+- Deployed copy under `D:\SillyTavern` synced (manifest 0.1.7).
+- Debug characters used during diagnosis cleaned up from the local ST.
+- Not released to GitHub yet (local dev version 0.1.7; publish on request).

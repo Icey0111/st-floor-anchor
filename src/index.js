@@ -8,6 +8,7 @@ import {
   scanBranches,
   deleteSnapshotFile,
   adoptRootIfNeeded,
+  appendCharacterMessage,
   renumberSnapshotsAfterPrune,
 } from './store/chat-api.js';
 import { chat_metadata, getCurrentChatId } from '/script.js';
@@ -39,12 +40,23 @@ try {
   const panel = createBranchPanel({
     onRefresh: () => refreshPanel(),
     onSwitch: (fileName) => switchToBranch(fileName),
-  onDelete: async (branchId, fileName, parentId) => {
-    await deleteSnapshotFile(fileName);
-    await renumberSnapshotsAfterPrune({ deletedBranchId: branchId, deletedParentId: parentId });
-    await refreshPanel();
-  },
-});
+    onAddMessage: async (text) => {
+      try {
+        await appendCharacterMessage(text);
+        // The floor is appended and rendered; rescan the panel in the
+        // background so the composer can close without waiting for it.
+        void refreshPanel();
+      } catch (error) {
+        console.error('[Floor Anchor] new character message failed:', error);
+        throw error; // composer keeps the text and re-enables Add
+      }
+    },
+    onDelete: async (branchId, fileName, parentId) => {
+      await deleteSnapshotFile(fileName);
+      await renumberSnapshotsAfterPrune({ deletedBranchId: branchId, deletedParentId: parentId });
+      await refreshPanel();
+    },
+  });
 
   async function refreshPanel() {
     const index = await scanBranches();
@@ -80,6 +92,10 @@ try {
   document.addEventListener('click', onEntryPointer, true);
 
   function ensureEntryButtons(rootNode = document) {
+    // ST emits USER_MESSAGE_RENDERED / CHARACTER_MESSAGE_RENDERED with the
+    // message id as the first argument; only scan when a real DOM node
+    // arrived, otherwise fall back to the whole document.
+    rootNode = rootNode && typeof rootNode.querySelectorAll === 'function' ? rootNode : document;
     let inserted = 0;
     rootNode.querySelectorAll('.mes_buttons').forEach((row) => {
       if (row.querySelector(`.${ENTRY_CLASS}`)) return;
@@ -158,6 +174,7 @@ try {
   window.__stFloorAnchor = {
     panel,
     refreshPanel,
+    addCharMessage: appendCharacterMessage,
     ensureEntryButtons,
     settings: {
       get: getStFloorSettings,

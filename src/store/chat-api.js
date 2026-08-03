@@ -18,6 +18,7 @@ import {
   saveChat,
   openCharacterChat,
   getCurrentChatId,
+  addOneMessage,
   saveCharacterDebounced,
 } from '/script.js';
 import { selected_group } from '/scripts/group-chats.js';
@@ -201,6 +202,61 @@ export async function createSnapshot({ reason, sourceFloor = null, capturedChat 
 /** Rollback = switching the active chat to a branch/snapshot file. */
 export async function switchToBranch(fileName) {
   await openCharacterChat(fileName);
+}
+
+/**
+ * Append a NEW character (assistant) message floor with custom content.
+ *
+ * Use case: a reply got truncated inside the reasoning chain and ST keeps the
+ * floor non-editable because no final body was produced. The user copies the
+ * stuck text and creates a fresh character floor with it.
+ *
+ * The pre-append chat is snapshotted first (reason 'rescue'), so the append
+ * can be rolled back from the panel like any other mutation.
+ *
+ * @param {string} text  message body for the new floor
+ * @returns {Promise<object|null>} the created ST message object
+ */
+export async function appendCharacterMessage(text) {
+  const content = typeof text === 'string' ? text.trim() : '';
+  if (!content) {
+    throw new TypeError('message text must be a non-empty string');
+  }
+  if (selected_group) {
+    console.warn('[Floor Anchor] group chats are not supported yet (M5)');
+    return null;
+  }
+
+  // Snapshot BEFORE the mutation so the panel can roll the append back.
+  await createSnapshot({ reason: 'rescue' });
+
+  const message = {
+    name: characters?.[this_chid]?.name ?? 'Character',
+    is_user: false,
+    is_system: false,
+    role: 'assistant',
+    send_date: new Date().toISOString(),
+    mes: content,
+    swipes: [],
+    extra: {},
+  };
+  chat.push(message);
+  try {
+    addOneMessage(message);
+  } catch (error) {
+    // The message is already in `chat`; a render failure must not lose it.
+    console.error('[Floor Anchor] render failed after appending character message:', error);
+  }
+  chat_metadata.tainted = true;
+  // Persist immediately: ST's debounced save can be cancelled by its own
+  // save loop, which would drop the appended floor. force bypasses the
+  // integrity-check popup. Bound the wait so a lost response can never trap
+  // the composer; the message stays in `chat` and ST's save loop persists it.
+  await Promise.race([
+    saveChat({ force: true }),
+    new Promise((resolve) => setTimeout(resolve, 8000)),
+  ]);
+  return message;
 }
 
 /** Scan all chat files of the current character and rebuild the PanelIndex. */

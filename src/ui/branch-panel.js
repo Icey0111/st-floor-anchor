@@ -5,7 +5,7 @@
 import { parseBranchId } from '../model/branches.js';
 import { wireTauriMobileLayout } from './mobile-layout.js';
 
-export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {}) {
+export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage, onClose } = {}) {
   const root = document.createElement('div');
   root.id = 'stfloor-panel';
   root.className = 'stfloor-panel';
@@ -15,6 +15,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
     <div class="stfloor-panel-header">
       <span class="stfloor-panel-title">Floor Anchor</span>
       <input class="stfloor-panel-search" type="search" placeholder="Search branches..." title="Filter by id / reason / preview text">
+      <button class="stfloor-panel-btn stfloor-add-message" title="New character message floor (paste text stuck in thinking)">+</button>
       <button class="stfloor-panel-btn stfloor-refresh" title="Rescan branch files">Refresh</button>
       <button class="stfloor-panel-btn stfloor-close" title="Close panel">X</button>
     </div>
@@ -22,6 +23,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
   `;
 
   const body = root.querySelector('.stfloor-panel-body');
+  root.querySelector('.stfloor-add-message').addEventListener('click', () => showComposer());
   root.querySelector('.stfloor-refresh').addEventListener('click', () => onRefresh?.());
   root.querySelector('.stfloor-close').addEventListener('click', () => { root.style.display = 'none'; onClose?.(); });
 
@@ -379,6 +381,79 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
 
     overlay.append(panel);
     document.body.append(overlay);
+  }
+
+  /**
+   * Composer for a new character (assistant) message floor. Lets the user
+   * paste content that got stuck in the reasoning chain and add it as a
+   * fresh editable char floor (ST keeps such messages non-editable).
+   * Non-destructive, so the primary action (Add floor) is prominent.
+   */
+  function showComposer() {
+    const overlay = document.createElement('div');
+    overlay.className = 'stfloor-confirm-overlay';
+    const panel = document.createElement('div');
+    panel.className = 'stfloor-composer-panel';
+    overlay.dataset.ttMobileSurface = 'backdrop';
+    panel.dataset.ttMobileSurface = 'none';
+    panel.innerHTML = `
+      <div class="stfloor-composer-title">New character message</div>
+      <textarea class="stfloor-composer-input" rows="6" placeholder="Paste the text that got stuck in thinking... (Ctrl+Enter to add, Esc to cancel)"></textarea>
+      <div class="stfloor-composer-actions">
+        <button class="stfloor-composer-cancel" type="button">Cancel</button>
+        <button class="stfloor-composer-add" type="button" disabled>Add floor</button>
+      </div>
+    `;
+    const input = panel.querySelector('.stfloor-composer-input');
+    const addBtn = panel.querySelector('.stfloor-composer-add');
+    const cancelBtn = panel.querySelector('.stfloor-composer-cancel');
+    let busy = false;
+
+    function close() {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+    }
+    async function confirmAdd() {
+      const value = input.value.trim();
+      if (!value || busy) return;
+      busy = true;
+      addBtn.disabled = true;
+      addBtn.textContent = 'Adding...';
+      try {
+        await onAddMessage?.(value);
+        close();
+      } catch (error) {
+        // Keep the composer open with the text so nothing is lost on failure.
+        console.error('[Floor Anchor] failed to add character message:', error);
+        busy = false;
+        addBtn.disabled = false;
+        addBtn.textContent = 'Add floor';
+        cancelBtn.disabled = false;
+      }
+    }
+    function onKey(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+      } else if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        confirmAdd();
+      }
+    }
+
+    input.addEventListener('input', () => {
+      addBtn.disabled = input.value.trim().length === 0;
+    });
+    addBtn.addEventListener('click', confirmAdd);
+    cancelBtn.addEventListener('click', close);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close();
+    });
+    document.addEventListener('keydown', onKey);
+
+    overlay.append(panel);
+    document.body.append(overlay);
+    input.focus();
   }
 
   function show() {

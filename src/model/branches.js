@@ -1,7 +1,11 @@
 import { createBranchMeta } from './metadata.js';
 
-/** Allowed reasons that trigger a pre-mutation snapshot. */
-export const SNAPSHOT_REASONS = ['roll', 'delete', 'edit'];
+/**
+ * Allowed reasons that trigger a pre-mutation snapshot.
+ * 'rescue' is used when the user manually appends a character message floor
+ * to salvage text that got stuck in the reasoning chain.
+ */
+export const SNAPSHOT_REASONS = ['roll', 'delete', 'edit', 'rescue'];
 
 /** The root branch id (start of the recursive tree numbering). */
 export const ROOT_BRANCH_ID = 'br_000';
