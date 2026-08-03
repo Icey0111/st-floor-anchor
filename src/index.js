@@ -77,19 +77,48 @@ try {
   // Real mouse/touch clicks may never reach the button element (ST's own
   // pointer handling, overlay elements, etc). Listen on document in the
   // CAPTURE phase for both pointerup and click, so the toggle always fires
-  // regardless of what the event target ended up being.
+  // regardless of what the event target ended up being. When pointerup opens
+  // the panel, the browser still dispatches a `click` right after - by then
+  // the panel may have rendered a button exactly under the cursor (e.g. the
+  // top branch's Switch), so one physical press could trigger BOTH the icon
+  // and that button. The follow-up click is therefore swallowed for a short
+  // window unless it still targets the entry icon itself.
   let lastToggleAt = 0;
-  function onEntryPointer(event) {
-    if (!event.target.closest(`.${ENTRY_CLASS}`)) return;
+  let swallowClickUntil = 0;
+  const isEntryTarget = (event) => !!event.target?.closest?.(`.${ENTRY_CLASS}`);
+
+  function onEntryPointerUp(event) {
+    if (!isEntryTarget(event)) return;
     const now = Date.now();
     if (now - lastToggleAt < 350) return; // dedupe pointerup + click pair
     lastToggleAt = now;
     event.preventDefault();
     event.stopPropagation();
     panel.toggle();
+    swallowClickUntil = now + 150;
   }
-  document.addEventListener('pointerup', onEntryPointer, true);
-  document.addEventListener('click', onEntryPointer, true);
+
+  function onEntryClick(event) {
+    const now = Date.now();
+    if (now < swallowClickUntil) {
+      // Tail of the pointerup that just toggled the panel. If it landed on a
+      // button that appeared under the cursor (not the entry icon), suppress
+      // it so one physical click cannot press two buttons.
+      if (!isEntryTarget(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+    if (!isEntryTarget(event)) return;
+    if (now - lastToggleAt < 350) return;
+    lastToggleAt = now;
+    event.preventDefault();
+    event.stopPropagation();
+    panel.toggle();
+  }
+  document.addEventListener('pointerup', onEntryPointerUp, true);
+  document.addEventListener('click', onEntryClick, true);
 
   function ensureEntryButtons(rootNode = document) {
     // ST emits USER_MESSAGE_RENDERED / CHARACTER_MESSAGE_RENDERED with the
