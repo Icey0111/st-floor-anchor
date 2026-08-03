@@ -36,6 +36,101 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
     if (currentIndex) render(currentIndex);
   });
 
+  // ---------- floating window: centered by default, draggable via header ----------
+  const header = root.querySelector('.stfloor-panel-header');
+  let panelPos = null; // { left, top } in px (viewport-relative); null = centered
+  let dragState = null;
+
+  function getPanelInsets() {
+    const cs = getComputedStyle(root);
+    const read = (name, fallback) => {
+      const raw = cs.getPropertyValue(name);
+      const n = Number.parseFloat(raw);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    return {
+      left: read('--stfloor-left', 8),
+      top: read('--stfloor-top', 8),
+      right: read('--stfloor-right', 8),
+      bottom: read('--stfloor-bot', 8),
+    };
+  }
+
+  function clampToViewport(left, top) {
+    const rect = root.getBoundingClientRect();
+    const insets = getPanelInsets();
+    const m = 4;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const minLeft = insets.left + m;
+    const minTop = insets.top + m;
+    const maxLeft = Math.max(minLeft, vw - insets.right - rect.width - m);
+    const maxTop = Math.max(minTop, vh - insets.bottom - rect.height - m);
+    return {
+      left: Math.min(Math.max(left, minLeft), maxLeft),
+      top: Math.min(Math.max(top, minTop), maxTop),
+    };
+  }
+
+  function applyPosition(pos) {
+    if (!pos) return;
+    const clamped = clampToViewport(pos.left, pos.top);
+    panelPos = clamped;
+    root.style.left = `${clamped.left}px`;
+    root.style.top = `${clamped.top}px`;
+    root.style.transform = 'none'; // JS takes over from the CSS centering
+  }
+
+  function centerPanel() {
+    const rect = root.getBoundingClientRect();
+    applyPosition({
+      left: (window.innerWidth - rect.width) / 2,
+      top: (window.innerHeight - rect.height) / 2,
+    });
+  }
+
+  header.addEventListener('pointerdown', (event) => {
+    if (event.target.closest('button, input, textarea, select')) return;
+    if (typeof event.button === 'number' && event.button !== 0) return;
+    const rect = root.getBoundingClientRect();
+    dragState = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      baseLeft: rect.left,
+      baseTop: rect.top,
+      moved: false,
+    };
+    try {
+      header.setPointerCapture(event.pointerId);
+    } catch {
+      // Non-fatal.
+    }
+    event.preventDefault();
+    document.body.classList.add('stfloor-dragging');
+  });
+
+  header.addEventListener('pointermove', (event) => {
+    if (!dragState || event.pointerId !== dragState.pointerId) return;
+    const dx = event.clientX - dragState.startX;
+    const dy = event.clientY - dragState.startY;
+    if (!dragState.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+    dragState.moved = true;
+    applyPosition({ left: dragState.baseLeft + dx, top: dragState.baseTop + dy });
+  });
+
+  function endDrag(event) {
+    if (!dragState || event.pointerId !== dragState.pointerId) return;
+    dragState = null;
+    document.body.classList.remove('stfloor-dragging');
+  }
+  header.addEventListener('pointerup', endDrag);
+  header.addEventListener('pointercancel', endDrag);
+
+  window.addEventListener('resize', () => {
+    if (panelPos && root.style.display !== 'none') applyPosition(panelPos);
+  });
+
   /**
    * Enable the marquee only when the text really overflows the box, and bound
    * the scroll range by the box edges: translateX(0) shows the text start at
@@ -283,6 +378,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
   function show() {
     markStMobileShell();
     root.style.display = 'flex';
+    if (!panelPos) centerPanel();
     requestAnimationFrame(applyPreviewScroll);
     setTimeout(applyPreviewScroll, 150); // settle after layout/scrollbars
     console.log('[Floor Anchor] panel shown');

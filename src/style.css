@@ -13,8 +13,9 @@
 /* Panel overlay */
 .stfloor-panel {
   position: fixed;
-  top: 70px;
-  right: 20px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   z-index: 2147483000;
   width: 470px;
   min-height: 160px;
@@ -38,6 +39,28 @@
   padding: 8px 10px;
   border-bottom: 1px solid var(--main-border-color, #3a3d42);
   background: var(--black30, rgba(0, 0, 0, 0.3));
+  /* The header is the drag handle (interactive children still work). */
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.stfloor-panel-header:active {
+  cursor: grabbing;
+}
+
+.stfloor-panel-header input,
+.stfloor-panel-header textarea {
+  touch-action: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+body.stfloor-dragging {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .stfloor-panel-title {
@@ -281,48 +304,18 @@
   }
 
   .stfloor-panel {
-    top: auto;
-    bottom: var(
-      --stfloor-bot,
-      max(
-        10px,
-        env(safe-area-inset-bottom, 0px),
-        var(--tt-viewport-bottom-inset, var(--tt-inset-bottom, 0px))
-      )
-    );
-    left: var(
-      --stfloor-left,
-      max(10px, env(safe-area-inset-left, 0px), var(--tt-inset-left, 0px))
-    );
-    right: var(
-      --stfloor-right,
-      max(10px, env(safe-area-inset-right, 0px), var(--tt-inset-right, 0px))
-    );
-    width: auto;
+    width: min(92dvw, 470px);
     max-width: none;
-    /* Mobile footprint stays around half the screen: full width, but at most
-       half the viewport height (content scrolls inside). */
+    /* Mobile footprint stays around half the screen: at most half the
+       viewport height (content scrolls inside). The window is centered and
+       draggable; JS clamps it within the safe frame while dragging. */
     max-height: min(
       50vh,
-      var(
-        --stfloor-max-h,
-        calc(
-          100vh
-          - max(10px, env(safe-area-inset-top, 0px), var(--tt-inset-top, 0px))
-          - max(10px, env(safe-area-inset-bottom, 0px), var(--tt-inset-bottom, 0px))
-        )
-      )
+      var(--stfloor-max-h, 50vh)
     );
     max-height: min(
       50dvh,
-      var(
-        --stfloor-max-h,
-        calc(
-          100dvh
-          - max(10px, env(safe-area-inset-top, 0px), var(--tt-inset-top, 0px))
-          - max(10px, env(safe-area-inset-bottom, 0px), var(--tt-inset-bottom, 0px))
-        )
-      )
+      var(--stfloor-max-h, 50dvh)
     );
   }
 

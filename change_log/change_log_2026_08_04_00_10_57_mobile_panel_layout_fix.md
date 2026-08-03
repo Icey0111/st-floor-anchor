@@ -108,3 +108,41 @@ depend on a TT-only module path.
   the viewport.
 - Desktop regression: 21/21 pass (no behavior change).
 - Released as v0.1.3.
+
+---
+
+# v0.1.4: centered + draggable floating panel
+
+- Date: 2026-08-04 00:45:00
+- Session: Same conversation; user asked the panel window to be centered on
+  the screen and draggable.
+
+## Problem / Requirement
+The panel was a fixed-position window anchored to a corner/edge. The user
+wants the window centered on the screen by default and draggable (mouse and
+touch), while keeping the half-screen mobile footprint and all previous
+mobile/TauriTavern fixes.
+
+## Purpose of Change
+Turn the panel into a true floating window: CSS centers it on first open
+(`left/top: 50%` + `translate(-50%, -50%)`), and JS pointer handling drags it
+by the header, clamping it inside the viewport / TauriTavern safe frame. The
+dragged position is kept for the current session; opening again before a
+reload re-centers only if it was never dragged.
+
+## How It Was Changed
+- [D:\stplugin\src\style.css L1-L40](file:///D:/stplugin/src/style.css#L1) - panel defaults to centered (`top/left: 50%`, `translate(-50%,-50%)`); header becomes a drag handle (`touch-action: none`, `cursor: grab`, `user-select: none`, inputs re-enabled); `body.stfloor-dragging` blocks text selection while dragging
+- [D:\stplugin\src\style.css L130-L175](file:///D:/stplugin/src/style.css#L130) - mobile media query simplified: panel keeps `width: min(92dvw, 470px)` and the 50dvh cap; edge anchoring removed (JS owns left/top now)
+- [D:\stplugin\src\ui\branch-panel.js L30-L110](file:///D:/stplugin/src/ui/branch-panel.js#L30) - floating-window logic: `getPanelInsets()` reads the TauriTavern `--stfloor-*` safe-frame vars, `clampToViewport()` bounds the window, `applyPosition()` writes inline left/top, `centerPanel()` centers on first open; pointerdown/move/up with `setPointerCapture` implements mouse+touch dragging; resize handler re-clamps
+- [D:\stplugin\.regression\mobile-layout-check.mjs L150-L205](file:///D:/stplugin/.regression/mobile-layout-check.mjs#L150) - assertions: panel centered on first open (+-3px), drag by the title moves the window down while keeping it inside the viewport/safe frame
+- [D:\stplugin\manifest.json L2](file:///D:/stplugin/manifest.json#L2) - version bumped to 0.1.4
+
+## Result
+- Unit tests: 32/32 pass.
+- Mobile layout regression: 28/28 pass - centered on first open in portrait,
+  landscape and simulated-TauriTavern scenarios; drag moves the window and it
+  stays inside the viewport; free-window surface and confirm-dialog opt-out
+  still verified; no console errors.
+- Desktop regression: 21/21 pass (desktop unchanged behaviorally, window now
+  opens centered instead of top-right).
+- Released as v0.1.4.
