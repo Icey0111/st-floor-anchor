@@ -54,6 +54,10 @@ export function replaceBranchIdInFileName(fileName, newId) {
 export function createBranchIdCounter() {
   const maxSeqByParent = new Map();
   return {
+    /** Clear all observed maxima (used when the scan switches chat trees). */
+    reset() {
+      maxSeqByParent.clear();
+    },
     /** Observe an existing id so the next child continues from it. */
     track(id) {
       const parent = getParentId(id);
@@ -74,6 +78,46 @@ export function createBranchIdCounter() {
       maxSeqByParent.set(parentId ?? '__root__', Math.max(0, Number(maxSeq) || 0));
     },
   };
+}
+
+/**
+ * Per-chat isolation: reduce a character's full branch-meta list to the undo
+ * tree the currently open chat belongs to. Every ST chat owns its own tree;
+ * all chats share the root id `br_000`, so membership is carried explicitly:
+ * root metas match by file name, and snapshot metas carry `mainChat` (the
+ * tree root's file name, written at snapshot creation and inherited by
+ * recursive branches).
+ *
+ * @param {Array} metas  raw st_floor metas (branch.fileName populated by the
+ *                       scan; snapshot metas may carry `mainChat`)
+ * @param {string|null} currentFileName  chat file name currently open
+ * @returns {{metas: Array, rootMeta: object|null, currentMeta: object|null}}
+ */
+export function filterMetasToCurrentTree(metas, currentFileName) {
+  const list = Array.isArray(metas) ? metas : [];
+  const currentFile = String(currentFileName ?? '');
+  if (!currentFile) return { metas: [], rootMeta: null, currentMeta: null };
+
+  const fileNameOf = (meta) => meta?.branch?.file_name ?? meta?.branch?.fileName ?? null;
+  const currentMeta = list.find((m) => fileNameOf(m) === currentFile) ?? null;
+  if (!currentMeta) return { metas: [], rootMeta: null, currentMeta: null };
+
+  // The tree root file: the current chat itself when it is a root, otherwise
+  // the `main_chat` recorded on the snapshot it belongs to.
+  const currentRoot = currentMeta.branch.kind === 'active'
+    ? (fileNameOf(currentMeta) ?? currentFile)
+    : (typeof currentMeta.mainChat === 'string' ? currentMeta.mainChat : null);
+
+  if (!currentRoot) return { metas: [], rootMeta: null, currentMeta };
+
+  const treeMetas = list.filter((meta) => {
+    if (meta?.branch?.kind === 'active') {
+      return fileNameOf(meta) === currentRoot;
+    }
+    return typeof meta?.mainChat === 'string' && meta.mainChat === currentRoot;
+  });
+  const rootMeta = treeMetas.find((m) => m?.branch?.kind === 'active') ?? null;
+  return { metas: treeMetas, rootMeta, currentMeta };
 }
 
 /** Simple monotonically-increasing branch id factory. */

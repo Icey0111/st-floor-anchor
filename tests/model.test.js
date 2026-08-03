@@ -12,6 +12,7 @@ import {
   buildSnapshotPlan,
   createBranchIdCounter,
   createBranchIdFactory,
+  filterMetasToCurrentTree,
   getLastSegment,
   getParentId,
   parseBranchId,
@@ -268,4 +269,53 @@ test('invariants: meta validation rejects malformed st_floor', () => {
   assert.deepEqual(validateBranchMeta({ schema: 3, branch: {} }), ['invalid st_floor meta']);
   assert.deepEqual(validateBranchMeta({ schema: 3, branch: { id: 'ok' } }), []);
   assert.equal(isValidBranchMeta({ schema: 3, branch: { id: 'ok' } }), true);
+});
+
+test('branches: filterMetasToCurrentTree isolates per-chat undo trees', () => {
+  const mk = (id, file, kind, parent, mainChat) => {
+    const meta = {
+      schema: 3,
+      branch: {
+        id,
+        kind,
+        parent,
+        reason: kind === 'active' ? 'root' : 'roll',
+        file_name: file,
+      },
+    };
+    if (mainChat) meta.mainChat = mainChat;
+    return meta;
+  };
+
+  const metas = [
+    mk('br_000', 'chatA.jsonl', 'active', null),
+    mk('br_000-1', 'chatA - [FA] roll 1 br_000-1.jsonl', 'snapshot', 'br_000', 'chatA.jsonl'),
+    mk('br_000-2', 'chatA - [FA] edit 2 br_000-2.jsonl', 'snapshot', 'br_000', 'chatA.jsonl'),
+    mk('br_000-1-1', 'chatA - [FA] roll 2 br_000-1-1.jsonl', 'snapshot', 'br_000-1', 'chatA.jsonl'),
+    // Same root id br_000, different chat - must stay isolated.
+    mk('br_000', 'chatB.jsonl', 'active', null),
+    mk('br_000-1', 'chatB - [FA] roll 1 br_000-1.jsonl', 'snapshot', 'br_000', 'chatB.jsonl'),
+  ];
+
+  const a = filterMetasToCurrentTree(metas, 'chatA.jsonl');
+  assert.deepEqual(a.metas.map((m) => m.branch.file_name).sort(), [
+    'chatA - [FA] edit 2 br_000-2.jsonl',
+    'chatA - [FA] roll 1 br_000-1.jsonl',
+    'chatA - [FA] roll 2 br_000-1-1.jsonl',
+    'chatA.jsonl',
+  ]);
+  assert.equal(a.currentMeta.branch.file_name, 'chatA.jsonl');
+  assert.equal(a.rootMeta.branch.file_name, 'chatA.jsonl');
+
+  // Opening a snapshot of chat B resolves to chat B's tree, not chat A's.
+  const b = filterMetasToCurrentTree(metas, 'chatB - [FA] roll 1 br_000-1.jsonl');
+  assert.deepEqual(b.metas.map((m) => m.branch.file_name).sort(), [
+    'chatB - [FA] roll 1 br_000-1.jsonl',
+    'chatB.jsonl',
+  ]);
+
+  // A plain ST chat (no st_floor yet) yields an empty tree.
+  const plain = filterMetasToCurrentTree(metas, 'plain.jsonl');
+  assert.equal(plain.metas.length, 0);
+  assert.equal(plain.currentMeta, null);
 });

@@ -146,3 +146,43 @@ reload re-centers only if it was never dragged.
 - Desktop regression: 21/21 pass (desktop unchanged behaviorally, window now
   opens centered instead of top-right).
 - Released as v0.1.4.
+
+---
+
+# v0.1.5: per-chat undo-tree isolation
+
+- Date: 2026-08-04 01:00:00
+- Session: Same conversation; user asked whether the plugin isolates chat
+  history - i.e. switching chats in ST's built-in chat list should show a new
+  undo tree per chat.
+
+## Problem / Requirement
+The plugin did not isolate chats: every chat was adopted with the same root id
+(`br_000`), and `scanBranches()` aggregated ALL chat files of a character into
+one tree. Switching chats therefore collided on the root id (the second chat
+was skipped as a "duplicate") and its snapshots were attached to the first
+chat's tree - a single mixed tree instead of one undo tree per chat.
+
+## Purpose of Change
+Give every ST chat its own independent undo tree. The panel always shows only
+the tree the currently open chat belongs to; switching chats in ST's native
+chat list swaps the panel to that chat's tree. Root id `br_000` remains shared
+(ids are scoped per chat), so membership is carried explicitly.
+
+## How It Was Changed
+- [D:\stplugin\src\model\branches.js L40-L95](file:///D:/stplugin/src/model/branches.js#L40) - new pure `filterMetasToCurrentTree()`: root chats match by file name, snapshots match by the `main_chat` recorded on them; `createBranchIdCounter.reset()` added so per-chat numbering restarts on chat switch
+- [D:\stplugin\src\store\helpers.js L163-L175](file:///D:/stplugin/src/store/helpers.js#L163) - `metaFromChatJson()` now also reads `chat_metadata.main_chat` into the meta
+- [D:\stplugin\src\store\chat-api.js L160-L180](file:///D:/stplugin/src/store/chat-api.js#L160) - snapshots now record `main_chat` = the undo-tree root file (inherited by recursive branches), not just the immediate chat
+- [D:\stplugin\src\store\chat-api.js L191-L300](file:///D:/stplugin/src/store/chat-api.js#L191) - `scanBranches()` filters to the current chat's tree before migration/dedupe/build; id counters reset per tree; the orphan fallback now exposes only the current plain chat
+- [D:\stplugin\src\store\chat-api.js L300-L330](file:///D:/stplugin/src/store/chat-api.js#L300) - `renumberSnapshotsAfterPrune()` renumbers within the current tree only
+- [D:\stplugin\tests\model.test.js L260-L320](file:///D:/stplugin/tests/model.test.js#L260) - unit test: two chats sharing the root id stay isolated; opening a snapshot resolves to its own tree; plain chats yield an empty tree
+- [D:\stplugin\.regression\regression.mjs L385-L445](file:///D:/stplugin/.regression/regression.mjs#L385) - integration checks: seed a second chat with its own tree, switch to it (panel shows only that tree), switch back (original tree restored)
+- [D:\stplugin\manifest.json L2](file:///D:/stplugin/manifest.json#L2) - version bumped to 0.1.5
+
+## Result
+- Unit tests: 33/33 pass (new isolation test included).
+- Desktop regression: 24/24 pass - including "switching chats shows the new
+  chat's isolated undo tree (br_000,br_000-1)" and "switching back restores
+  the original tree (br_000,br_000-1,br_000-2)".
+- Mobile layout regression: 28/28 pass (no layout regression).
+- Released as v0.1.5.

@@ -164,7 +164,13 @@ export function metaFromChatJson(chatJson) {
   if (!Array.isArray(chatJson) || chatJson.length === 0) return null;
   const header = chatJson[0];
   if (!header || typeof header !== 'object') return null;
-  return readBranchMeta(header.chat_metadata ?? null);
+  const meta = readBranchMeta(header.chat_metadata ?? null);
+  if (!meta) return null;
+  const mainChat = header.chat_metadata?.main_chat;
+  if (typeof mainChat === 'string' && mainChat.length > 0) {
+    meta.mainChat = mainChat;
+  }
+  return meta;
 }
 
 /**

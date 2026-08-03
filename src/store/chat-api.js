@@ -29,6 +29,7 @@ import { PanelIndex } from '../model/panel-index.js';
 import {
   ROOT_BRANCH_ID,
   createBranchIdCounter,
+  filterMetasToCurrentTree,
   getParentId,
   planMigrateLegacyIds,
   planRenumberAfterDelete,
@@ -169,10 +170,16 @@ export async function createSnapshot({ reason, sourceFloor = null, capturedChat 
     createdAt: new Date().toISOString(),
     fileName,
   });
+  // Every snapshot records its undo-tree root (the main chat file), so the
+  // panel can isolate trees per chat even though all roots share id br_000.
+  // Recursive branches inherit the root from the snapshot they branch off.
+  const treeRoot = parent.branch.kind === 'active'
+    ? (parent.branch.fileName ?? mainChatName)
+    : (typeof chat_metadata?.main_chat === 'string' ? chat_metadata.main_chat : mainChatName);
 
   await saveChat({
     chatName: fileName,
-    withMetadata: { main_chat: mainChatName, st_floor: meta },
+    withMetadata: { main_chat: treeRoot, st_floor: meta },
     chatData,
     force: true, // brand-new file; avoid the integrity-check popup
   });
@@ -191,18 +198,28 @@ export async function switchToBranch(fileName) {
 export async function scanBranches() {
   const avatarUrl = getCurrentAvatarUrl();
   if (!avatarUrl) return new PanelIndex();
+  const currentFileName = getCurrentChatId() ?? null;
 
   let { names, metas } = await fetchAllBranchMetas(avatarUrl);
+
+  // Per-chat isolation: every ST chat owns its own undo tree; the panel shows
+  // only the tree the currently open chat belongs to (all chats share the
+  // root id br_000, so membership is carried by main_chat).
+  let tree = filterMetasToCurrentTree(metas, currentFileName);
+  let treeMetas = tree.metas;
+  const currentMeta = tree.currentMeta;
 
   // One-time migration from the old flat 200-based ids to the recursive tree
   // scheme (br_200 -> br_000, br_201 -> br_000-1, ...). Files are re-saved
   // under new names with rewritten metadata; the scan then re-reads the
   // migrated state so the panel and id counters see the new ids.
-  const legacyMigration = planMigrateLegacyIds(metas);
+  const legacyMigration = planMigrateLegacyIds(treeMetas);
   if (legacyMigration.migrated) {
     console.log(`[Floor Anchor] migrating ${legacyMigration.steps.length} legacy branch id(s) to recursive scheme`);
     await applyRenumberSteps(legacyMigration.steps, avatarUrl);
     ({ names, metas } = await fetchAllBranchMetas(avatarUrl));
+    tree = filterMetasToCurrentTree(metas, currentFileName);
+    treeMetas = tree.metas;
   }
 
   // Migrate legacy snapshots (created before the [FA] marker existed) so the
@@ -212,9 +229,9 @@ export async function scanBranches() {
   // (which would recreate the old name); the list filter hides it by id until
   // the user leaves it and a later scan migrates the file safely.
   const metaByFileName = new Map(
-    metas.filter((m) => m.branch.file_name).map((m) => [m.branch.file_name, m]),
+    treeMetas.filter((m) => m.branch.file_name).map((m) => [m.branch.file_name, m]),
   );
-  for (const meta of metas) {
+  for (const meta of treeMetas) {
     const fileName = meta.branch.file_name;
     if (
       meta.branch.kind === 'snapshot'
@@ -265,7 +282,7 @@ export async function scanBranches() {
   // marker-named file when possible so the panel never crashes on duplicates.
   const seenBranchIds = new Set();
   const uniqueMetas = [];
-  for (const meta of metas) {
+  for (const meta of treeMetas) {
     if (seenBranchIds.has(meta.branch.id)) {
       const existing = uniqueMetas.find((m) => m.branch.id === meta.branch.id);
       if (existing && !isSnapshotFileName(existing.branch.file_name) && isSnapshotFileName(meta.branch.file_name)) {
@@ -278,13 +295,15 @@ export async function scanBranches() {
     uniqueMetas.push(meta);
   }
 
+  // Per-chat id counters: rebuild from this tree only, so switching chats
+  // restarts the numbering (the next chat's first snapshot is br_000-1 again).
+  branchIds.reset();
   const index = PanelIndex.build(uniqueMetas);
   for (const meta of uniqueMetas) branchIds.track(meta.branch.id);
-  if (!index.nodes.size) {
-    // plain ST chats without st_floor: expose them as unmanaged roots
-    for (const name of names) {
-      index.add({ schema: 3, branch: { id: `orphan_${name}`, kind: 'active', parent: null, reason: 'root', file_name: name } });
-    }
+  if (!index.nodes.size && !currentMeta && currentFileName && names.includes(currentFileName)) {
+    // Plain ST chat without st_floor: expose just the current chat as an
+    // unmanaged root (it is adopted as br_000 on the next snapshot trigger).
+    index.add({ schema: 3, branch: { id: `orphan_${currentFileName}`, kind: 'active', parent: null, reason: 'root', file_name: currentFileName } });
   }
   return index;
 }
@@ -310,10 +329,12 @@ export async function deleteSnapshotFile(fileName) {
 export async function renumberSnapshotsAfterPrune({ deletedBranchId, deletedParentId = null } = {}) {
   if (selected_group) return { steps: [], maxSeq: 0, touched: false };
   const avatarUrl = getCurrentAvatarUrl();
-  if (!avatarUrl) return { steps: [], maxSeq: 0, touched: false };
+  const currentFileName = getCurrentChatId() ?? null;
+  if (!avatarUrl || !currentFileName) return { steps: [], maxSeq: 0, touched: false };
 
   const { metas } = await fetchAllBranchMetas(avatarUrl);
-  const plan = planRenumberAfterDelete(metas, deletedBranchId, deletedParentId);
+  const tree = filterMetasToCurrentTree(metas, currentFileName);
+  const plan = planRenumberAfterDelete(tree.metas, deletedBranchId, deletedParentId);
   await applyRenumberSteps(plan.steps, avatarUrl);
 
   const parent = deletedParentId ?? getParentId(deletedBranchId);
