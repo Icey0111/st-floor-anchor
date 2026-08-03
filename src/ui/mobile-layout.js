@@ -5,8 +5,13 @@
  * env(safe-area-inset-*) + media-query fallback already keeps the panel on
  * screen. On TauriTavern (Android/iOS) the host exposes
  * `window.__TAURITAVERN__.api.layout`; we opt the panel into the host's
- * safe-area / IME contract (`data-tt-mobile-surface`) and clamp it to the
- * host-reported safe frame so it can never be pushed off-screen.
+ * surface taxonomy and clamp it to the host-reported safe frame so it can
+ * never be pushed off-screen.
+ *
+ * IMPORTANT: the panel must be declared `free-window`, NOT
+ * `fullscreen-window`. TauriTavern's mobile geometry firewall forces
+ * `fullscreen-window` elements to fill the whole safe frame with
+ * `max-height: none !important`, which would defeat our half-screen cap.
  */
 
 function clampRect(root, snap) {
@@ -31,30 +36,33 @@ function clampRect(root, snap) {
 /**
  * Wire the panel into TauriTavern's mobile layout contract when available.
  * Resolves to a cleanup function; on plain ST / desktop this is a no-op and
- * the layout API is never imported (avoids a 404 in the console).
+ * the host ABI is simply absent.
  */
 export async function wireTauriMobileLayout(root) {
-  if (typeof window === 'undefined' || !window.__TAURITAVERN__?.api?.layout) {
+  const abi = typeof window === 'undefined' ? null : window.__TAURITAVERN__;
+  const layout = abi?.api?.layout;
+  if (!layout?.subscribe) {
     return () => {};
   }
 
   try {
-    const kit = await import('/scripts/tauritavern/layout-kit.js');
-    const layout = kit.getHostAbi?.()?.api?.layout ?? window.__TAURITAVERN__.api.layout;
-    if (!layout?.subscribe) return () => {};
-
-    // Explicit opt-in: the host's overlay classifier treats the panel as an
-    // IME/safe-area-aware interactive window instead of guessing its role.
-    root.setAttribute('data-tt-mobile-surface', 'fullscreen-window');
-
     try {
-      await kit.waitForHostReady?.();
+      await (abi.ready ?? Promise.resolve());
     } catch {
-      // Non-fatal: subscribe below may still work once ready.
+      // Non-fatal: subscribe below may still work.
     }
 
+    // Explicit opt-in as a floating window: the host's geometry firewall has
+    // no free-window rules, so our own CSS sizing (half-screen cap, safe
+    // areas) keeps full control.
+    root.setAttribute('data-tt-mobile-surface', 'free-window');
+
     let unsubscribe = null;
-    unsubscribe = await layout.subscribe((snap) => clampRect(root, snap));
+    try {
+      unsubscribe = await layout.subscribe((snap) => clampRect(root, snap));
+    } catch {
+      // Non-fatal: CSS fallbacks still apply.
+    }
     return () => {
       try {
         unsubscribe?.();

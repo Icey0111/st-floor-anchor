@@ -69,3 +69,42 @@ clamp. The prune-confirm dialog stays full-screen as a modal.
   and bottom-anchored in both orientations.
 - Desktop regression: 21/21 pass (no behavior change).
 - Released as v0.1.2.
+
+---
+
+# v0.1.3: panel no longer fullscreen on TauriTavern mobile (surface fix)
+
+- Date: 2026-08-04 00:30:00
+- Session: Same conversation; after v0.1.2 the panel still filled the whole
+  phone screen on TauriTavern.
+
+## Problem / Requirement
+Even with the 50dvh cap, TauriTavern mobile kept showing the panel fullscreen.
+The panel was declared `data-tt-mobile-surface="fullscreen-window"`; the host's
+mobile geometry firewall forces such elements to fill the whole safe frame
+with `max-height: none !important`, which cancels our half-screen cap.
+
+## Purpose of Change
+Stop declaring the panel (and the small confirm dialog) as fullscreen surfaces
+so TauriTavern never overrides their geometry: the panel becomes
+`free-window` (host has no geometry rules for it) and the confirm dialog
+explicitly opts out with `none`. The wiring now talks to
+`window.__TAURITAVERN__.api.layout` directly instead of importing
+`/scripts/tauritavern/layout-kit.js`, so the clamp is testable and does not
+depend on a TT-only module path.
+
+## How It Was Changed
+- [D:\stplugin\src\ui\mobile-layout.js L30-L80](file:///D:/stplugin/src/ui/mobile-layout.js#L30) - surface changed to `free-window`; removed the dynamic import of layout-kit.js (uses the ABI directly, waits on `abi.ready`); keeps subscribing to layout snapshots for safe-frame/IME clamping
+- [D:\stplugin\src\ui\branch-panel.js L220-L235](file:///D:/stplugin/src/ui/branch-panel.js#L220) - confirm dialog surface changed from `fullscreen-window` to `none` (overlay stays `backdrop`)
+- [D:\stplugin\.regression\mobile-layout-check.mjs L20-L80](file:///D:/stplugin/.regression/mobile-layout-check.mjs#L20) - new `tt-mobile` scenario: injects a fake `window.__TAURITAVERN__` layout ABI and a copy of the host firewall CSS, then asserts the panel stays `free-window`, keeps the 50dvh cap and receives the ABI clamp (bottom inset 34px)
+- [D:\stplugin\manifest.json L2](file:///D:/stplugin/manifest.json#L2) - version bumped to 0.1.3
+
+## Result
+- Unit tests: 32/32 pass.
+- Mobile layout regression: 22/22 pass - including the simulated-TauriTavern
+  scenario where the host firewall is present: panel surface `free-window`,
+  max-height still capped at 50dvh (422px portrait), bottom anchored at the
+  ABI-reported inset (34px), confirm dialog surface `none`, everything inside
+  the viewport.
+- Desktop regression: 21/21 pass (no behavior change).
+- Released as v0.1.3.

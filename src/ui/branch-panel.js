@@ -230,10 +230,11 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
 
     const panel = document.createElement('div');
     panel.className = 'stfloor-confirm-panel';
-    // TauriTavern mobile: declare surface roles explicitly so the host
-    // applies the safe-area/IME contract instead of guessing.
+    // TauriTavern mobile: the overlay mask is a backdrop; the small centered
+    // dialog explicitly opts out of host geometry (fullscreen-window would
+    // force it to fill the safe frame).
     overlay.dataset.ttMobileSurface = 'backdrop';
-    panel.dataset.ttMobileSurface = 'fullscreen-window';
+    panel.dataset.ttMobileSurface = 'none';
 
     function close() {
       overlay.remove();
