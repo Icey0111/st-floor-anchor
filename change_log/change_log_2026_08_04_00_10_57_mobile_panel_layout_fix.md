@@ -452,3 +452,32 @@ branch-id explanation, FAQ, a curated CHANGELOG, and GitHub metadata
   screenshots + changelog.
 - Screenshot demo character created and cleaned up from the local ST.
 - Committed and pushed to GitHub (main).
+
+---
+
+# Add MIT LICENSE and rewrite the Chinese README in natural Chinese
+
+- Date: 2026-08-04 02:05:00
+- Session: Same conversation; user pointed out the repo still had no LICENSE
+  file and the Chinese README read like a stiff English-to-Chinese
+  translation.
+
+## Problem / Requirement
+The repository had no `LICENSE` file, and the Chinese README's phrasing was
+too literal/translated (英译中僵硬感). The user asked for a license and a
+polished, natural-sounding Chinese page.
+
+## Purpose of Change
+Add a standard open-source license so users know their rights, and rewrite the
+Chinese README with native, conversational wording while keeping all the
+user-facing information (features, install, usage, branch ids, FAQ).
+
+## How It Was Changed
+- [LICENSE L1-L21](file:///D:/stplugin/LICENSE#L1) - new MIT License (Copyright (c) 2026 Icey0111)
+- [README.md L1-L150](file:///D:/stplugin/README.md#L1) - full rewrite in natural Chinese: relaxed, idiomatic phrasing throughout; added a License section linking LICENSE; content unchanged
+- [README.en.md L1-L90](file:///D:/stplugin/README.en.md#L1) - added a License section linking LICENSE (English mirror stays as-is otherwise)
+
+## Result
+- Repo now carries a LICENSE file (GitHub will auto-detect MIT) and the
+  Chinese README reads naturally.
+- Committed and pushed to GitHub (main).

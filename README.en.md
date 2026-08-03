@@ -88,6 +88,10 @@ Previews only use the message body (`mes`); the reasoning chain is never preview
 - TauriTavern (mobile, safe-area / IME aware)
 - Pure frontend extension, no Node backend
 
+## License
+
+Released under the [MIT License](LICENSE).
+
 ## For developers
 
 - Design docs: `dev_docs/`
