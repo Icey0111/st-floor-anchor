@@ -128,8 +128,25 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
   header.addEventListener('pointercancel', endDrag);
 
   window.addEventListener('resize', () => {
+    applyMobileCap();
     if (panelPos && root.style.display !== 'none') applyPosition(panelPos);
   });
+
+  /**
+   * Guaranteed half-screen cap on mobile. Some mobile WebViews (older Android
+   * in TauriTavern) do not support `min()` / `dvh`, so the CSS media-query
+   * cap silently falls back to the base 70vh and the panel can cover the chat
+   * bubbles. An inline max-height always wins over stylesheet rules.
+   */
+  const MOBILE_QUERY = window.matchMedia('(max-width: 640px), (max-height: 640px)');
+  function applyMobileCap() {
+    if (MOBILE_QUERY.matches) {
+      const cap = Math.max(120, Math.round(window.innerHeight * 0.5));
+      root.style.maxHeight = `${cap}px`;
+    } else {
+      root.style.maxHeight = '';
+    }
+  }
 
   /**
    * Enable the marquee only when the text really overflows the box, and bound
@@ -378,6 +395,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
   function show() {
     markStMobileShell();
     root.style.display = 'flex';
+    applyMobileCap();
     if (!panelPos) centerPanel();
     requestAnimationFrame(applyPreviewScroll);
     setTimeout(applyPreviewScroll, 150); // settle after layout/scrollbars
@@ -393,6 +411,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
   }
 
   document.body.append(root);
+  applyMobileCap();
   // ST mobile turns body into a fixed viewport shell; switch our floating UI
   // to absolute-in-body so it can never anchor to a zero-height fixed box.
   // Re-check on show (and once after load) because the mobile CSS can be

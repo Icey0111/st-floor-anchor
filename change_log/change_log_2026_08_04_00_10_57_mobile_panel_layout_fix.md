@@ -186,3 +186,39 @@ chat list swaps the panel to that chat's tree. Root id `br_000` remains shared
   the original tree (br_000,br_000-1,br_000-2)".
 - Mobile layout regression: 28/28 pass (no layout regression).
 - Released as v0.1.5.
+
+---
+
+# v0.1.6: JS-enforced half-screen cap (panel no longer covers chat bubbles)
+
+- Date: 2026-08-04 01:40:00
+- Session: Same conversation; user reported the little triangle next to the
+  message bubble is gone on mobile and sent a screenshot.
+
+## Problem / Requirement
+The screenshot showed the Floor Anchor panel covering roughly 70% of the
+screen, with the message bubble squeezed to a sliver at the bottom - the
+bubble's side triangle is hidden behind the panel. The CSS half-screen cap
+(`min(50dvh, ...)`) relies on `min()`/`dvh`, which older mobile WebViews
+(e.g. TauriTavern on Android) do not support; those declarations are dropped
+and the panel falls back to the base `70vh`, covering the chat.
+
+## Purpose of Change
+Enforce the half-screen cap with an inline `max-height` from JS, which always
+wins over stylesheet rules regardless of CSS unit support. The panel then can
+never cover more than the top half of the viewport on mobile, leaving the chat
+bubbles (and their triangles) visible.
+
+## How It Was Changed
+- [D:\stplugin\src\ui\branch-panel.js L100-L125](file:///D:/stplugin/src/ui/branch-panel.js#L100) - `applyMobileCap()` sets `root.style.maxHeight` inline to 50% of `innerHeight` when the viewport matches the mobile query, and clears it on desktop; called at init, on show, and on resize
+- [D:\stplugin\.regression\mobile-layout-check.mjs L155-L180](file:///D:/stplugin/.regression/mobile-layout-check.mjs#L155) - new assertion: the inline `max-height` is present and equals ~50% of the viewport in every mobile scenario
+- [D:\stplugin\manifest.json L2](file:///D:/stplugin/manifest.json#L2) - version bumped to 0.1.6
+
+## Result
+- Unit tests: 33/33 pass.
+- Mobile layout regression: 31/31 pass - inline cap is exactly 422px on a
+  844px-tall phone (50%); panel stays inside the viewport and draggable.
+- Desktop regression: 24/24 pass (inline cap cleared on desktop; 70vh CSS
+  unchanged).
+- Leftover probe test characters cleaned up from the local ST instance.
+- Released as v0.1.6.
