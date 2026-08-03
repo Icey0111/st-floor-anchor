@@ -419,3 +419,36 @@ panel like any other mutation.
 - Deployed copy under `D:\SillyTavern` synced (manifest 0.1.7).
 - Debug characters used during diagnosis cleaned up from the local ST.
 - Not released to GitHub yet (local dev version 0.1.7; publish on request).
+
+---
+
+# User-facing GitHub repo structure (README, screenshots, changelog, topics)
+
+- Date: 2026-08-04 01:55:00
+- Session: Same conversation; user asked to polish the GitHub repository
+  structure, mainly from a user's point of view.
+
+## Problem / Requirement
+The repository README was a one-paragraph developer note ("Status: M1 in
+progress") and the repo had no screenshots, no user changelog and no GitHub
+topics - not helpful for someone who wants to install and use the extension.
+
+## Purpose of Change
+Make the GitHub repo presentable and usable for end users: a proper
+installation guide, feature list with screenshots, usage instructions,
+branch-id explanation, FAQ, a curated CHANGELOG, and GitHub metadata
+(description + topics) so the repo is discoverable.
+
+## How It Was Changed
+- [README.md L1-L200](file:///D:/stplugin/README.md#L1) - rewritten as a full Chinese user-facing README (screenshots, features, install for SillyTavern + TauriTavern, usage, branch-id scheme, FAQ, compatibility, developer links)
+- [README.en.md L1-L200](file:///D:/stplugin/README.en.md#L1) - English mirror of the README, linked from the top of README.md
+- [CHANGELOG.md L1-L80](file:///D:/stplugin/CHANGELOG.md#L1) - curated user-facing changelog from v0.1.0 to v0.1.7
+- [docs/screenshot-panel.png](file:///D:/stplugin/docs/screenshot-panel.png) - panel screenshot generated from a demo branch tree (roll/edit/rescue nodes with previews)
+- [docs/screenshot-composer.png](file:///D:/stplugin/docs/screenshot-composer.png) - composer screenshot (new character message floor)
+- GitHub repo metadata: description updated and 10 topics added (sillytavern, tauritavern, extension, plugin, ai-chat, llm, roleplay, backup, undo, chat-history)
+
+## Result
+- Repo now reads like a user-facing extension page: install + usage + FAQ +
+  screenshots + changelog.
+- Screenshot demo character created and cleaned up from the local ST.
+- Committed and pushed to GitHub (main).
