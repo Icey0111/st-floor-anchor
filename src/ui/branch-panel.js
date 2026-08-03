@@ -3,6 +3,7 @@
  * is the rollback operation (switch chat). Snapshots can be pruned.
  */
 import { parseBranchId } from '../model/branches.js';
+import { wireTauriMobileLayout } from './mobile-layout.js';
 
 export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {}) {
   const root = document.createElement('div');
@@ -229,6 +230,10 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
 
     const panel = document.createElement('div');
     panel.className = 'stfloor-confirm-panel';
+    // TauriTavern mobile: declare surface roles explicitly so the host
+    // applies the safe-area/IME contract instead of guessing.
+    overlay.dataset.ttMobileSurface = 'backdrop';
+    panel.dataset.ttMobileSurface = 'fullscreen-window';
 
     function close() {
       overlay.remove();
@@ -275,6 +280,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
   }
 
   function show() {
+    markStMobileShell();
     root.style.display = 'flex';
     requestAnimationFrame(applyPreviewScroll);
     setTimeout(applyPreviewScroll, 150); // settle after layout/scrollbars
@@ -290,5 +296,23 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onClose } = {
   }
 
   document.body.append(root);
+  // ST mobile turns body into a fixed viewport shell; switch our floating UI
+  // to absolute-in-body so it can never anchor to a zero-height fixed box.
+  // Re-check on show (and once after load) because the mobile CSS can be
+  // injected slightly later than our boot.
+  function markStMobileShell() {
+    try {
+      if (getComputedStyle(document.body).position === 'fixed') {
+        document.body.classList.add('stfloor-mobile-shell');
+      }
+    } catch {
+      // Non-fatal.
+    }
+  }
+  markStMobileShell();
+  setTimeout(markStMobileShell, 1000);
+  // Mobile-safe positioning on TauriTavern (no-op elsewhere). Fire-and-forget:
+  // cleanup is only needed if the panel is ever torn down.
+  void wireTauriMobileLayout(root);
   return { root, render, show, hide, toggle };
 }

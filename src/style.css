@@ -19,6 +19,7 @@
   width: 470px;
   min-height: 160px;
   max-height: 70vh;
+  box-sizing: border-box;
   display: none;
   flex-direction: column;
   background: #1c1e22;
@@ -199,6 +200,7 @@
   width: 320px;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 32px);
+  box-sizing: border-box;
   overflow-y: auto;
   background: #1c1e22;
   border: 1px solid var(--main-border-color, #3a3d42);
@@ -255,4 +257,88 @@
 
 .stfloor-confirm-cancel:hover {
   background: #b71c1c;
+}
+
+/*
+ * Mobile / narrow-viewport layout: the panel becomes a bottom-anchored sheet
+ * that can never leave the screen. It consumes env(safe-area-inset-*) (iOS
+ * and plain mobile browsers) and TauriTavern's --tt-inset-* /
+ * --tt-viewport-bottom-inset variables (Android). When the TauriTavern host
+ * ABI is present, JS additionally overrides the --stfloor-* custom
+ * properties from the host's layout snapshot (safe frame + IME inset).
+ */
+@media (max-width: 640px), (max-height: 640px) {
+  /*
+   * ST mobile (mobile-styles.css) turns <body> into a fixed viewport shell
+   * and html carries -webkit-transform: translateZ(0); together these make
+   * `position: fixed` descendants anchor to a zero-height html box, pushing
+   * bottom/right-anchored panels off-screen. When that shell is detected
+   * (JS adds the class), anchor our UI to the fixed body instead.
+   */
+  body.stfloor-mobile-shell .stfloor-panel,
+  body.stfloor-mobile-shell .stfloor-confirm-overlay {
+    position: absolute;
+  }
+
+  .stfloor-panel {
+    top: auto;
+    bottom: var(
+      --stfloor-bot,
+      max(
+        10px,
+        env(safe-area-inset-bottom, 0px),
+        var(--tt-viewport-bottom-inset, var(--tt-inset-bottom, 0px))
+      )
+    );
+    left: var(
+      --stfloor-left,
+      max(10px, env(safe-area-inset-left, 0px), var(--tt-inset-left, 0px))
+    );
+    right: var(
+      --stfloor-right,
+      max(10px, env(safe-area-inset-right, 0px), var(--tt-inset-right, 0px))
+    );
+    width: auto;
+    max-width: none;
+    max-height: var(
+      --stfloor-max-h,
+      calc(
+        100vh
+        - max(10px, env(safe-area-inset-top, 0px), var(--tt-inset-top, 0px))
+        - max(10px, env(safe-area-inset-bottom, 0px), var(--tt-inset-bottom, 0px))
+      )
+    );
+    max-height: var(
+      --stfloor-max-h,
+      calc(
+        100dvh
+        - max(10px, env(safe-area-inset-top, 0px), var(--tt-inset-top, 0px))
+        - max(10px, env(safe-area-inset-bottom, 0px), var(--tt-inset-bottom, 0px))
+      )
+    );
+  }
+
+  .stfloor-confirm-overlay {
+    width: 100vw;
+    height: 100vh;
+    width: 100dvw;
+    height: 100dvh;
+  }
+
+  .stfloor-confirm-panel {
+    max-width: calc(
+      100vw
+      - max(
+        24px,
+        calc(env(safe-area-inset-left, 0px) + env(safe-area-inset-right, 0px))
+      )
+    );
+    max-height: calc(
+      100dvh
+      - max(
+        24px,
+        calc(env(safe-area-inset-top, 0px) + env(safe-area-inset-bottom, 0px))
+      )
+    );
+  }
 }
