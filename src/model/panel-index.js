@@ -32,7 +32,9 @@ export class PanelIndex {
       reason: b.reason,
       createdAt: b.createdAt,
       fileName: b.fileName,
-      preview: typeof meta.preview === 'string' && meta.preview.length > 0 ? meta.preview : null,
+      // Empty string means "loaded and empty"; null means "not loaded yet".
+      preview: typeof meta.preview === 'string' ? meta.preview : null,
+      previewToken: typeof meta.previewToken === 'string' ? meta.previewToken : null,
       children: [],
     };
     this.nodes.set(b.id, node);
@@ -51,7 +53,24 @@ export class PanelIndex {
   static build(metas = []) {
     const index = new PanelIndex();
     for (const meta of metas) index.add(meta);
+    index.rebuildLinks();
     return index;
+  }
+
+  /** Rebuild parent/child links after all nodes are known (scan-order safe). */
+  rebuildLinks() {
+    this.rootIds = [];
+    this.orphans = [];
+    for (const node of this.nodes.values()) node.children = [];
+    for (const node of this.nodes.values()) {
+      if (!node.parent) {
+        this.rootIds.push(node.id);
+      } else if (this.nodes.has(node.parent)) {
+        this.nodes.get(node.parent).children.push(node.id);
+      } else {
+        this.orphans.push(node.id);
+      }
+    }
   }
 
   get(id) {
@@ -116,9 +135,15 @@ export class PanelIndex {
       };
       if (typeof node.preview === 'string' && node.preview.length > 0) {
         meta.preview = node.preview;
+      } else if (node.preview === '') {
+        meta.preview = '';
+      }
+      if (typeof node.previewToken === 'string') {
+        meta.previewToken = node.previewToken;
       }
       index.add(meta);
     }
+    index.rebuildLinks();
     index.activeId = json?.activeId ?? null;
     return index;
   }

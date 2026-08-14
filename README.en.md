@@ -5,7 +5,7 @@
 Automatically backs up the current chat **before** every regenerate (roll), delete, or edit — then roll back to any historical branch from a panel with one click. Backups are stored as native chat files (marked `[FA]` in the file name) and hidden from SillyTavern's built-in chat lists, so they never clutter your normal chat management.
 
 - Language: [中文](README.md)
-- Version: v0.1.7 (SillyTavern 1.18+, TauriTavern mobile compatible)
+- Version: v0.1.12 (SillyTavern 1.18+, TauriTavern mobile compatible)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## Screenshots
@@ -19,9 +19,11 @@ Automatically backs up the current chat **before** every regenerate (roll), dele
 - **Automatic snapshots** before regenerate / delete / edit, with content fingerprint dedupe (a failed roll while the API is disconnected won't create junk backups).
 - **Branch tree panel** with recursive ids (`br_000` → `br_000-1` → `br_000-1-1`) so rollback paths are easy to read.
 - **One-click rollback** — Switch to any historical snapshot (rollback is just switching chats).
-- **Snapshot management** — Prune removes unwanted snapshots (ids are renumbered automatically) with a two-step confirmation.
+- **Snapshot management** — Prune removes unwanted leaf snapshots; branch ids stay stable and deletion uses a two-step confirmation.
 - **Per-chat isolation** — every chat gets its own independent undo tree; switching chats or character cards never mixes trees.
 - **Body previews** — each branch shows the last message body (marquee scroll for long text); preset status bars / thinking tags can be filtered out.
+- **Visible retention policy** — keep every snapshot by default, or enable a count-based cleanup reminder; Floor Anchor never deletes snapshots in the background.
+- **Large-tree performance** — the derived branch index is cached, while full chats are read for previews only when a visible row needs fallback content.
 - **New character message floor** — when a reply gets stuck in thinking with no body (the floor becomes non-editable), create a fresh character floor with the recovered text (a `rescue` snapshot is created automatically).
 
 ## Installation
@@ -53,7 +55,7 @@ Paste the same repository URL in the extension installer. Mobile is fully adapte
 2. Every regenerate / delete / edit automatically creates a snapshot, and a new branch appears in the panel.
 3. Click **Switch** (history icon) to roll back to a snapshot; click **Prune** (trash icon) to delete a snapshot.
 4. Use the **+** button (top-right) to create a new character message floor: paste text that got stuck in thinking and click Add floor (or Ctrl+Enter).
-5. Settings (Extensions panel → Floor Anchor drawer): preview length and XML tags to filter out of previews.
+5. Settings (Extensions panel → Floor Anchor drawer): preview length, XML tags to filter, and either keep-all retention or a count-based cleanup reminder. Neither mode auto-deletes files.
 
 ## Branch id scheme
 

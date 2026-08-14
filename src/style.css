@@ -122,6 +122,21 @@ body.stfloor-dragging {
   padding: 6px;
 }
 
+.stfloor-retention-status {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor, #777) 55%, transparent);
+  color: var(--SmartThemeBodyColor, #ddd);
+  font-size: 0.78em;
+  opacity: 0.82;
+}
+
+.stfloor-retention-status.stfloor-retention-due {
+  color: #ffd58a;
+  background: rgb(137 82 0 / 18%);
+  opacity: 1;
+}
+
 .stfloor-empty {
   padding: 12px;
   color: var(--dim-text, #888);

@@ -24,6 +24,9 @@ import {
 import { selected_group } from '/scripts/group-chats.js';
 import { saveMetadataDebounced } from '/scripts/extensions.js';
 import { getStFloorSettings } from '../settings.js';
+import { shouldDeleteRewriteSource } from './mutation-policy.js';
+import { createOperationQueue } from './operation-queue.js';
+import { createPanelIndexCache } from './index-cache.js';
 
 import { createBranchMeta, readBranchMeta } from '../model/metadata.js';
 import { PanelIndex } from '../model/panel-index.js';
@@ -32,15 +35,13 @@ import {
   createOrphanRootMeta,
   createBranchIdCounter,
   filterMetasToCurrentTree,
-  getParentId,
   planMigrateLegacyIds,
-  planRenumberAfterDelete,
   resolveTreeRootByChain,
 } from '../model/branches.js';
 import {
   buildSnapshotName,
-  parseChatList,
-  metaFromChatJson,
+  parseChatListEntries,
+  getChatListEntryToken,
   computeChatFingerprint,
   createFingerprintStore,
   isSnapshotFileName,
@@ -52,6 +53,9 @@ import {
 const fingerprints = createFingerprintStore();
 const branchIds = createBranchIdCounter(); // per-parent counters, root = br_000
 const INTERNAL_HEADER = { 'X-StFloor-Internal': '1' };
+const storeOperations = createOperationQueue();
+const panelIndexCache = createPanelIndexCache();
+const latestFileTokens = new Map();
 
 function getCurrentAvatarUrl() {
   return characters?.[this_chid]?.avatar ?? '';
@@ -74,12 +78,12 @@ async function persistMainChat(avatarUrl, fileName, mainChat) {
       body: JSON.stringify({ ch_name: characters?.[this_chid]?.name ?? '', file_name: fileName, avatar_url: avatarUrl }),
       cache: 'no-cache',
     });
-    if (!getResponse.ok) return;
+    if (!getResponse.ok) return false;
     const chatJson = await getResponse.json();
-    if (!Array.isArray(chatJson) || !chatJson[0]?.chat_metadata) return;
-    if (chatJson[0].chat_metadata.main_chat === mainChat) return;
+    if (!Array.isArray(chatJson) || !chatJson[0]?.chat_metadata) return false;
+    if (chatJson[0].chat_metadata.main_chat === mainChat) return true;
     chatJson[0].chat_metadata.main_chat = mainChat;
-    await fetch('/api/chats/save', {
+    const saveResponse = await fetch('/api/chats/save', {
       method: 'POST',
       headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
       body: JSON.stringify({
@@ -90,67 +94,103 @@ async function persistMainChat(avatarUrl, fileName, mainChat) {
         force: true,
       }),
     });
+    return saveResponse.ok;
   } catch (error) {
     console.error(`[Floor Anchor] main_chat repair failed for ${fileName}:`, error);
+    return false;
   }
 }
 
 /**
- * Raw scan: list chat files of the current character and read each header's
- * st_floor meta (authoritative file_name + derived preview). No migration or
- * dedupe happens here - callers apply their own rules.
+ * Raw scan: use ST's full character-chat listing, which already includes the
+ * first-line metadata and cheap file-change fields. Structural discovery is
+ * therefore one request regardless of tree size; full chat reads are left to
+ * the lazy preview path.
  */
 async function fetchAllBranchMetas(avatarUrl) {
+  const currentFileName = getCurrentChatId() ?? null;
+  const settings = getStFloorSettings();
+  const previewKey = getPreviewSettingsKey(settings);
+  const cachedScope = panelIndexCache.read(avatarUrl, currentFileName, previewKey);
+  const cachedByFile = new Map(
+    (cachedScope?.index?.nodes ?? [])
+      .filter((node) => typeof node?.fileName === 'string')
+      .map((node) => [node.fileName, node]),
+  );
   const listResponse = await fetch('/api/characters/chats', {
     method: 'POST',
     headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
-    body: JSON.stringify({ avatar_url: avatarUrl, simple: true }),
+    body: JSON.stringify({ avatar_url: avatarUrl, metadata: true }),
   });
-  if (!listResponse.ok) return { names: [], metas: [] };
+  if (!listResponse.ok) return { names: [], metas: [], previews: new Map(), failed: true };
 
-  const names = parseChatList(await listResponse.json());
+  const listPayload = await listResponse.json();
+  if (listPayload?.error === true) return { names: [], metas: [], previews: new Map(), failed: true };
+  const entries = parseChatListEntries(listPayload);
+  const names = entries.map((entry) => entry.fileName);
   const metas = [];
-  const previews = new Map(); // file name -> derived preview, incl. plain chats
-  const settings = getStFloorSettings();
+  const previews = new Map(); // file name -> cached preview state for plain chats
+  const tokenScope = new Map();
 
-  for (const name of names) {
-    try {
-      const getResponse = await fetch('/api/chats/get', {
-        method: 'POST',
-        headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
-        body: JSON.stringify({ ch_name: characters?.[this_chid]?.name ?? '', file_name: name, avatar_url: avatarUrl }),
-        cache: 'no-cache',
-      });
-      if (!getResponse.ok) continue;
-      const chatJson = await getResponse.json();
-      // Derived display data (last message body preview) - never persisted.
-      // Computed for every file so plain chats (no st_floor meta) can still
-      // show a preview when the panel renders them as an unmanaged br_000.
-      const preview = computeChatPreview(chatJson, settings.previewMaxLength, { filterBlocks: settings.filterBlocks });
-      const meta = metaFromChatJson(chatJson);
-      if (meta) {
-        // The file list is authoritative: the name inside chat_metadata may be
-        // stale after a rename (e.g. the [FA] marker migration below).
-        meta.branch.file_name = name;
-        meta.preview = preview;
-      }
-      if (meta) {
-        metas.push(meta);
-      } else {
-        previews.set(name, preview);
-      }
-    } catch {
-      // skip unreadable files (e.g. temporary chats)
+  for (const entry of entries) {
+    const name = entry.fileName;
+    const previewToken = getChatListEntryToken(entry);
+    tokenScope.set(name, previewToken);
+    const cached = cachedByFile.get(name);
+    const cachedPreview = previewToken && cached?.previewToken === previewToken && typeof cached.preview === 'string'
+      ? cached.preview
+      : null;
+    // The catalog already supplies the last message body. Use it when it
+    // produces a valid preview; only ambiguous/empty cases need a lazy full
+    // chat read so they can fall back to an earlier non-empty body.
+    const catalogPreview = cachedPreview === null && Number(entry.chat_items) > 0
+      ? computeChatPreview(
+          [{ mes: entry.mes === '[The message is empty]' ? '' : entry.mes }],
+          settings.previewMaxLength,
+          { filterBlocks: settings.filterBlocks },
+        )
+      : '';
+    const preview = cachedPreview ?? (Number(entry.chat_items) === 0 ? '' : (catalogPreview || null));
+    const meta = readBranchMeta(entry.chat_metadata ?? null);
+    if (meta) {
+      const mainChat = entry.chat_metadata?.main_chat;
+      if (typeof mainChat === 'string' && mainChat) meta.mainChat = mainChat;
+      // The list is authoritative after a rename.
+      meta.branch.fileName = name;
+      // Migration planners still consume the persisted snake_case shape.
+      meta.branch.file_name = name;
+      meta.previewToken = previewToken;
+      if (preview !== null) meta.preview = preview;
+      metas.push(meta);
+    } else {
+      previews.set(name, { preview, previewToken });
     }
   }
-  return { names, metas, previews };
+  latestFileTokens.clear();
+  latestFileTokens.set(avatarUrl, tokenScope);
+  return { names, metas, previews, failed: false, previewKey };
+}
+
+function getPreviewSettingsKey(settings = getStFloorSettings()) {
+  return JSON.stringify([settings.previewMaxLength, settings.filterBlocks]);
+}
+
+function readCachedIndex(avatarUrl, currentFileName, settings = getStFloorSettings()) {
+  const cached = panelIndexCache.read(avatarUrl, currentFileName, getPreviewSettingsKey(settings));
+  if (!cached) return null;
+  try {
+    return PanelIndex.fromJSON(cached.index);
+  } catch (error) {
+    console.warn('[Floor Anchor] ignoring invalid cached branch index:', error);
+    return null;
+  }
 }
 
 /**
  * If the current chat has no st_floor metadata yet, adopt it as the root
  * branch (schema v3, kind=active, reason=root).
  */
-export function adoptRootIfNeeded() {
+function adoptRootIfNeededUnlocked() {
   const existing = readBranchMeta(chat_metadata);
   if (existing) {
     branchIds.track(existing.branch.id);
@@ -165,9 +205,15 @@ export function adoptRootIfNeeded() {
   });
   chat_metadata.st_floor = meta;
   saveMetadataDebounced();
+  panelIndexCache.invalidateAvatar(getCurrentAvatarUrl());
   const saved = readBranchMeta(chat_metadata);
   branchIds.track(saved.branch.id);
   return saved;
+}
+
+/** Adopt a plain current chat as a root without racing other store work. */
+export function adoptRootIfNeeded() {
+  return storeOperations.enqueue('adopt-root', () => adoptRootIfNeededUnlocked());
 }
 
 /**
@@ -178,7 +224,7 @@ export function adoptRootIfNeeded() {
  * @param {number|null} opts.sourceFloor  1-based floor of the mutation
  * @param {Array} [opts.capturedChat]     synchronous pre-mutation clone of `chat`
  */
-export async function createSnapshot({ reason, sourceFloor = null, capturedChat = null }) {
+async function createSnapshotUnlocked({ reason, sourceFloor = null, capturedChat = null }) {
   if (selected_group) {
     console.warn('[Floor Anchor] group chats are not supported yet (M5)');
     return null;
@@ -188,8 +234,14 @@ export async function createSnapshot({ reason, sourceFloor = null, capturedChat 
   }
 
   const chatData = capturedChat ?? structuredClone(chat);
-  const parent = adoptRootIfNeeded();
+  const parent = adoptRootIfNeededUnlocked();
   branchIds.track(parent.branch.id);
+  const mainChatName = getMainChatName();
+  // Every snapshot records its undo-tree root (the main chat file), so the
+  // panel can isolate trees even though every chat starts at br_000.
+  const treeRoot = parent.branch.kind === 'active'
+    ? (parent.branch.fileName ?? mainChatName)
+    : (typeof chat_metadata?.main_chat === 'string' ? chat_metadata.main_chat : mainChatName);
 
   // Content-level dedupe: if this branch's last snapshot has identical chat
   // content (e.g. a roll clicked while the API is disconnected), skip.
@@ -197,13 +249,19 @@ export async function createSnapshot({ reason, sourceFloor = null, capturedChat 
   // Dedupe is per (branch, reason): a failed roll must not create a snapshot,
   // but a delete/edit is a distinct intent even if the content happens to
   // match an earlier roll snapshot.
-  const fingerprintKey = `${parent.branch.id}:${reason}`;
+  // Branch ids repeat in every chat tree, so the persisted dedupe key must be
+  // scoped by character/avatar and root chat as well as branch and reason.
+  const fingerprintKey = JSON.stringify([
+    getCurrentAvatarUrl(),
+    treeRoot,
+    parent.branch.id,
+    reason,
+  ]);
   if (fingerprints.get(fingerprintKey) === fingerprint) {
     return { skipped: true, reason: 'identical-content' };
   }
 
   const branchId = branchIds.next(parent.branch.id);
-  const mainChatName = getMainChatName();
   const fileName = buildSnapshotName(mainChatName, { reason, branchId });
 
   const meta = createBranchMeta({
@@ -215,13 +273,6 @@ export async function createSnapshot({ reason, sourceFloor = null, capturedChat 
     createdAt: new Date().toISOString(),
     fileName,
   });
-  // Every snapshot records its undo-tree root (the main chat file), so the
-  // panel can isolate trees per chat even though all roots share id br_000.
-  // Recursive branches inherit the root from the snapshot they branch off.
-  const treeRoot = parent.branch.kind === 'active'
-    ? (parent.branch.fileName ?? mainChatName)
-    : (typeof chat_metadata?.main_chat === 'string' ? chat_metadata.main_chat : mainChatName);
-
   await saveChat({
     chatName: fileName,
     withMetadata: { main_chat: treeRoot, st_floor: meta },
@@ -230,8 +281,13 @@ export async function createSnapshot({ reason, sourceFloor = null, capturedChat 
   });
 
   fingerprints.set(fingerprintKey, fingerprint);
+  panelIndexCache.invalidateAvatar(getCurrentAvatarUrl());
 
   return { branchId, fileName, meta };
+}
+
+export function createSnapshot(options) {
+  return storeOperations.enqueue('create-snapshot', () => createSnapshotUnlocked(options));
 }
 
 /** Rollback = switching the active chat to a branch/snapshot file. */
@@ -252,7 +308,7 @@ export async function switchToBranch(fileName) {
  * @param {string} text  message body for the new floor
  * @returns {Promise<object|null>} the created ST message object
  */
-export async function appendCharacterMessage(text) {
+async function appendCharacterMessageUnlocked(text) {
   const content = typeof text === 'string' ? text.trim() : '';
   if (!content) {
     throw new TypeError('message text must be a non-empty string');
@@ -263,7 +319,7 @@ export async function appendCharacterMessage(text) {
   }
 
   // Snapshot BEFORE the mutation so the panel can roll the append back.
-  await createSnapshot({ reason: 'rescue' });
+  await createSnapshotUnlocked({ reason: 'rescue' });
 
   const message = {
     name: characters?.[this_chid]?.name ?? 'Character',
@@ -284,117 +340,53 @@ export async function appendCharacterMessage(text) {
   }
   chat_metadata.tainted = true;
   // Persist immediately: ST's debounced save can be cancelled by its own
-  // save loop, which would drop the appended floor. force bypasses the
-  // integrity-check popup. Bound the wait so a lost response can never trap
-  // the composer; the message stays in `chat` and ST's save loop persists it.
-  await Promise.race([
-    saveChat({ force: true }),
-    new Promise((resolve) => setTimeout(resolve, 8000)),
-  ]);
+  // save loop, which would drop the appended floor. Await the actual write so
+  // the store queue cannot release a later scan/prune into an unfinished save.
+  await saveChat({ force: true });
+  panelIndexCache.invalidateAvatar(getCurrentAvatarUrl());
   return message;
 }
 
-/** Scan all chat files of the current character and rebuild the PanelIndex. */
-export async function scanBranches() {
+
+export function appendCharacterMessage(text) {
+  return storeOperations.enqueue('append-character-message', () => appendCharacterMessageUnlocked(text));
+}
+
+/**
+ * Read chat files and build an index without writing, renaming, or deleting.
+ * This is the only implementation behind the public scan operation.
+ */
+async function scanBranchesReadOnly() {
   const avatarUrl = getCurrentAvatarUrl();
   if (!avatarUrl) return new PanelIndex();
   const currentFileName = getCurrentChatId() ?? null;
 
-  let { names, metas, previews } = await fetchAllBranchMetas(avatarUrl);
+  let catalog;
+  try {
+    catalog = await fetchAllBranchMetas(avatarUrl);
+  } catch (error) {
+    console.warn('[Floor Anchor] branch catalog read failed; trying cached index:', error);
+    return readCachedIndex(avatarUrl, currentFileName) ?? new PanelIndex();
+  }
+  const { names, metas, previews, previewKey } = catalog;
+  if (catalog.failed) {
+    return readCachedIndex(avatarUrl, currentFileName) ?? new PanelIndex();
+  }
+
+  // Repair stale membership only in the scan's local objects. Persistence is
+  // reserved for migrateLegacyStorage(), keeping this path observably read-only.
+  for (const meta of metas) {
+    if (meta?.branch?.kind !== 'snapshot') continue;
+    const resolved = resolveTreeRootByChain(metas, meta);
+    if (resolved) meta.mainChat = resolved;
+  }
 
   // Per-chat isolation: every ST chat owns its own undo tree; the panel shows
   // only the tree the currently open chat belongs to (all chats share the
   // root id br_000, so membership is carried by main_chat).
-  let tree = filterMetasToCurrentTree(metas, currentFileName);
-  let treeMetas = tree.metas;
+  const tree = filterMetasToCurrentTree(metas, currentFileName);
+  const treeMetas = tree.metas;
   const currentMeta = tree.currentMeta;
-
-  // One-time migration from the old flat 200-based ids to the recursive tree
-  // scheme (br_200 -> br_000, br_201 -> br_000-1, ...). Files are re-saved
-  // under new names with rewritten metadata; the scan then re-reads the
-  // migrated state so the panel and id counters see the new ids.
-  const legacyMigration = planMigrateLegacyIds(treeMetas);
-  if (legacyMigration.migrated) {
-    console.log(`[Floor Anchor] migrating ${legacyMigration.steps.length} legacy branch id(s) to recursive scheme`);
-    await applyRenumberSteps(legacyMigration.steps, avatarUrl);
-    ({ names, metas, previews } = await fetchAllBranchMetas(avatarUrl));
-    tree = filterMetasToCurrentTree(metas, currentFileName);
-    treeMetas = tree.metas;
-  }
-
-  // Migrate legacy snapshots (created before the [FA] marker existed) so the
-  // client-side list filter can recognise them by name. The file list is
-  // authoritative, so a rename is never re-attempted on the next scan. The
-  // currently open chat is skipped: renaming it races with ST's own saves
-  // (which would recreate the old name); the list filter hides it by id until
-  // the user leaves it and a later scan migrates the file safely.
-  const metaByFileName = new Map(
-    treeMetas.filter((m) => m.branch.file_name).map((m) => [m.branch.file_name, m]),
-  );
-  for (const meta of treeMetas) {
-    const fileName = meta.branch.file_name;
-    if (
-      meta.branch.kind === 'snapshot'
-      && fileName
-      && fileName !== getCurrentChatId()
-      && !isSnapshotFileName(fileName)
-    ) {
-      const renamed = sanitizeFileName(`${fileName} ${SNAPSHOT_FILE_MARKER}`);
-      if (renamed !== fileName) {
-        const destination = metaByFileName.get(renamed);
-        if (destination) {
-          // The marker-named file already exists. When it belongs to the same
-          // branch (a stale save recreated the old name after an earlier
-          // rename), the unmarked source is a redundant duplicate: drop it and
-          // point the branch at the existing file. Never touch a destination
-          // that is a normal chat or a different branch.
-          if (destination.branch.kind === 'snapshot' && destination.branch.id === meta.branch.id) {
-            await fetch('/api/chats/delete', {
-              method: 'POST',
-              headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
-              body: JSON.stringify({ chatfile: `${fileName}.jsonl`, avatar_url: avatarUrl }),
-            });
-            meta.branch.file_name = renamed;
-            console.log(`[Floor Anchor] removed duplicate legacy snapshot ${fileName} (kept ${renamed})`);
-          }
-          continue;
-        }
-        const renameResponse = await fetch('/api/chats/rename', {
-          method: 'POST',
-          headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
-          body: JSON.stringify({
-            is_group: false,
-            avatar_url: avatarUrl,
-            original_file: `${fileName}.jsonl`,
-            renamed_file: `${renamed}.jsonl`,
-          }),
-        });
-        if (renameResponse.ok) {
-          meta.branch.file_name = renamed;
-          console.log(`[Floor Anchor] migrated legacy snapshot name: ${fileName} -> ${renamed}`);
-        }
-      }
-    }
-  }
-
-  // Self-heal stale `main_chat` references (legacy migration artifacts: the
-  // flat-id -> tree migration renamed files but did not rewrite nested
-  // `main_chat`). Resolve the true tree root through the parent chain and
-  // persist the correction so the panel never degrades into a rootless
-  // "branch tree". The currently open chat is skipped - rewriting it races
-  // ST's own saves; the in-memory resolution keeps the panel correct and a
-  // later scan repairs the file once the user leaves it.
-  for (const meta of metas) {
-    const branch = meta?.branch;
-    if (!branch || branch.kind !== 'snapshot') continue;
-    const resolved = resolveTreeRootByChain(metas, meta);
-    if (!resolved || resolved === meta.mainChat) continue; // already valid
-    meta.mainChat = resolved;
-    if (branch.file_name && branch.file_name !== currentFileName) {
-      await persistMainChat(avatarUrl, branch.file_name, resolved);
-      console.log(`[Floor Anchor] repaired main_chat for ${branch.file_name} -> ${resolved}`);
-    }
-  }
 
   // Defensive dedupe: two chat files can carry the same branch id (e.g. a
   // stale save recreated an old snapshot name after a rename). Keep the
@@ -406,6 +398,7 @@ export async function scanBranches() {
       const existing = uniqueMetas.find((m) => m.branch.id === meta.branch.id);
       if (existing && !isSnapshotFileName(existing.branch.file_name) && isSnapshotFileName(meta.branch.file_name)) {
         existing.branch.file_name = meta.branch.file_name;
+        existing.branch.fileName = meta.branch.fileName;
       }
       console.log(`[Floor Anchor] skipping duplicate branch id ${meta.branch.id} (${meta.branch.file_name})`);
       continue;
@@ -428,7 +421,11 @@ export async function scanBranches() {
   const hasLiveRoot = !!currentFileName && !isSnapshotFileName(currentFileName)
     && [...index.nodes.values()].some((n) => n.kind === 'active' && n.fileName === currentFileName);
   if (!hasLiveRoot && currentFileName && names.includes(currentFileName) && !isSnapshotFileName(currentFileName)) {
-    index.add(createOrphanRootMeta(currentFileName, previews.get(currentFileName) ?? null));
+    const previewState = previews.get(currentFileName) ?? null;
+    const orphan = createOrphanRootMeta(currentFileName);
+    if (typeof previewState?.preview === 'string') orphan.preview = previewState.preview;
+    if (typeof previewState?.previewToken === 'string') orphan.previewToken = previewState.previewToken;
+    index.add(orphan);
   }
   // Mark the currently open chat's node as active so the panel can show at a
   // glance whether the user is on the root mainline or on a branch snapshot.
@@ -441,11 +438,197 @@ export async function scanBranches() {
   if (activeId && index.get(activeId)) {
     index.setActive(activeId);
   }
+  const rootNode = [...index.nodes.values()].find((node) => node.kind === 'active' && node.parent === null);
+  if (rootNode?.fileName) {
+    panelIndexCache.write({
+      avatarUrl,
+      rootFileName: rootNode.fileName,
+      index: index.toJSON(),
+      previewKey,
+    });
+  }
   return index;
 }
 
+/** Pure scan, serialized with writes so it sees a complete store state. */
+export function scanBranches() {
+  return storeOperations.enqueue('scan-branches', scanBranchesReadOnly);
+}
+
+/** Read one full chat only when its on-screen preview is actually needed. */
+async function loadBranchPreviewUnlocked(fileName) {
+  const avatarUrl = getCurrentAvatarUrl();
+  if (!avatarUrl || !fileName) return '';
+  const settings = getStFloorSettings();
+  const response = await fetch('/api/chats/get', {
+    method: 'POST',
+    headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
+    body: JSON.stringify({
+      ch_name: characters?.[this_chid]?.name ?? '',
+      file_name: fileName,
+      avatar_url: avatarUrl,
+    }),
+    cache: 'no-cache',
+  });
+  if (!response.ok) throw new Error(`preview read failed for ${fileName}`);
+  const chatJson = await response.json();
+  const preview = computeChatPreview(chatJson, settings.previewMaxLength, { filterBlocks: settings.filterBlocks });
+  const currentFileName = getCurrentChatId() ?? fileName;
+  const previewToken = latestFileTokens.get(avatarUrl)?.get(fileName) ?? null;
+  panelIndexCache.setPreview(
+    avatarUrl,
+    currentFileName,
+    fileName,
+    getPreviewSettingsKey(settings),
+    preview,
+    previewToken,
+  );
+  return preview;
+}
+
+export function loadBranchPreview(fileName) {
+  return storeOperations.enqueue('load-branch-preview', () => loadBranchPreviewUnlocked(fileName));
+}
+
+/**
+ * Explicit, idempotent legacy repair pass. This is intentionally separate
+ * from scanBranches(): callers choose when disk mutations are allowed.
+ */
+async function migrateLegacyStorageUnlocked() {
+  const avatarUrl = getCurrentAvatarUrl();
+  const summary = {
+    idSteps: 0,
+    snapshotsRenamed: 0,
+    duplicatesRemoved: 0,
+    mainChatsRepaired: 0,
+    failures: 0,
+  };
+  if (!avatarUrl) return summary;
+
+  const currentFileName = getCurrentChatId() ?? null;
+  let catalog = await fetchAllBranchMetas(avatarUrl);
+  if (catalog.failed) {
+    summary.failures += 1;
+    console.error('[Floor Anchor] legacy migration aborted: chat catalog is unavailable');
+    return summary;
+  }
+  let { metas } = catalog;
+  let treeMetas = filterMetasToCurrentTree(metas, currentFileName).metas;
+
+  const legacyMigration = planMigrateLegacyIds(treeMetas);
+  if (legacyMigration.migrated) {
+    console.log(`[Floor Anchor] migrating ${legacyMigration.steps.length} legacy branch id(s) to recursive scheme`);
+    const result = await applyMigrationSteps(legacyMigration.steps, avatarUrl);
+    summary.idSteps += result.completed;
+    summary.failures += result.failed;
+    catalog = await fetchAllBranchMetas(avatarUrl);
+    if (catalog.failed) {
+      summary.failures += 1;
+      console.error('[Floor Anchor] legacy migration stopped: refreshed chat catalog is unavailable');
+      if (result.completed > 0) panelIndexCache.invalidateAvatar(avatarUrl);
+      return summary;
+    }
+    ({ metas } = catalog);
+    treeMetas = filterMetasToCurrentTree(metas, currentFileName).metas;
+  }
+
+  // Add the marker used by the native-list filter. Never rename the currently
+  // open file: ST may save it under the old name while the rename is running.
+  const metaByFileName = new Map(
+    treeMetas.filter((m) => m.branch.file_name).map((m) => [m.branch.file_name, m]),
+  );
+  for (const meta of treeMetas) {
+    const fileName = meta.branch.file_name;
+    if (
+      meta.branch.kind !== 'snapshot'
+      || !fileName
+      || fileName === currentFileName
+      || isSnapshotFileName(fileName)
+    ) continue;
+
+    const renamed = sanitizeFileName(`${fileName} ${SNAPSHOT_FILE_MARKER}`);
+    if (renamed === fileName) continue;
+    const destination = metaByFileName.get(renamed);
+    if (destination) {
+      if (destination.branch.kind === 'snapshot' && destination.branch.id === meta.branch.id) {
+        const deleteResponse = await fetch('/api/chats/delete', {
+          method: 'POST',
+          headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
+          body: JSON.stringify({ chatfile: `${fileName}.jsonl`, avatar_url: avatarUrl }),
+        });
+        if (deleteResponse.ok) {
+          summary.duplicatesRemoved += 1;
+          meta.branch.file_name = renamed;
+          console.log(`[Floor Anchor] removed duplicate legacy snapshot ${fileName} (kept ${renamed})`);
+        } else {
+          summary.failures += 1;
+          console.error(`[Floor Anchor] failed to remove duplicate legacy snapshot ${fileName}`);
+        }
+      }
+      continue;
+    }
+
+    const renameResponse = await fetch('/api/chats/rename', {
+      method: 'POST',
+      headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
+      body: JSON.stringify({
+        is_group: false,
+        avatar_url: avatarUrl,
+        original_file: `${fileName}.jsonl`,
+        renamed_file: `${renamed}.jsonl`,
+      }),
+    });
+    if (renameResponse.ok) {
+      summary.snapshotsRenamed += 1;
+      meta.branch.file_name = renamed;
+      metaByFileName.delete(fileName);
+      metaByFileName.set(renamed, meta);
+      console.log(`[Floor Anchor] migrated legacy snapshot name: ${fileName} -> ${renamed}`);
+    } else {
+      summary.failures += 1;
+      console.error(`[Floor Anchor] legacy snapshot rename failed: ${fileName} -> ${renamed}`);
+    }
+  }
+
+  // Persist inferred tree roots after id/name migration. Open files are left
+  // untouched and will be repaired on a later chat load.
+  for (const meta of metas) {
+    const branch = meta?.branch;
+    if (!branch || branch.kind !== 'snapshot') continue;
+    const resolved = resolveTreeRootByChain(metas, meta);
+    if (!resolved || resolved === meta.mainChat || !branch.file_name || branch.file_name === currentFileName) continue;
+    if (await persistMainChat(avatarUrl, branch.file_name, resolved)) {
+      summary.mainChatsRepaired += 1;
+      console.log(`[Floor Anchor] repaired main_chat for ${branch.file_name} -> ${resolved}`);
+    } else {
+      summary.failures += 1;
+    }
+  }
+  if (
+    summary.idSteps
+    || summary.snapshotsRenamed
+    || summary.duplicatesRemoved
+    || summary.mainChatsRepaired
+  ) {
+    panelIndexCache.invalidateAvatar(avatarUrl);
+  }
+  return summary;
+}
+
+export function migrateLegacyStorage() {
+  return storeOperations.enqueue('migrate-legacy-storage', migrateLegacyStorageUnlocked);
+}
+
+/** Adopt the live root and run legacy repairs as one non-interleavable unit. */
+export function prepareCurrentChatStorage() {
+  return storeOperations.enqueue('prepare-current-chat', async () => {
+    adoptRootIfNeededUnlocked();
+    return migrateLegacyStorageUnlocked();
+  });
+}
+
 /** Delete a snapshot/branch file from the panel (prune). */
-export async function deleteSnapshotFile(fileName) {
+async function deleteSnapshotFileUnlocked(fileName) {
   const avatarUrl = getCurrentAvatarUrl();
   if (!avatarUrl || !fileName) return false;
   const response = await fetch('/api/chats/delete', {
@@ -453,42 +636,32 @@ export async function deleteSnapshotFile(fileName) {
     headers: getRequestHeaders(),
     body: JSON.stringify({ chatfile: `${fileName}.jsonl`, avatar_url: avatarUrl }),
   });
+  if (response.ok) panelIndexCache.invalidateAvatar(avatarUrl);
   return response.ok;
 }
 
-/**
- * After a snapshot is pruned, compact the remaining branch ids so there are
- * no gaps within the deleted branch's parent bucket (recursive tree ids).
- * Each affected file is re-saved under its new name with rewritten st_floor
- * metadata (id + parent), then the old file is deleted.
- */
-export async function renumberSnapshotsAfterPrune({ deletedBranchId, deletedParentId = null } = {}) {
-  if (selected_group) return { steps: [], maxSeq: 0, touched: false };
-  const avatarUrl = getCurrentAvatarUrl();
-  const currentFileName = getCurrentChatId() ?? null;
-  if (!avatarUrl || !currentFileName) return { steps: [], maxSeq: 0, touched: false };
-
-  const { metas } = await fetchAllBranchMetas(avatarUrl);
-  const tree = filterMetasToCurrentTree(metas, currentFileName);
-  const plan = planRenumberAfterDelete(tree.metas, deletedBranchId, deletedParentId);
-  await applyRenumberSteps(plan.steps, avatarUrl);
-
-  const parent = deletedParentId ?? getParentId(deletedBranchId);
-  if (parent && plan.touched) branchIds.resetParent(parent, plan.maxSeq);
-  return plan;
+export function deleteSnapshotFile(fileName) {
+  return storeOperations.enqueue('delete-snapshot', () => deleteSnapshotFileUnlocked(fileName));
 }
 
 /**
- * Shared executor for renumbering/migration steps: read each file, rewrite
+ * Executor for legacy migration steps: read each file, rewrite
  * its st_floor id/parent, save under the new name (force), delete the old
  * file, and keep the character chat field in sync when the renamed file is
  * the currently open chat. Never saves and deletes the same name (guard).
  */
-async function applyRenumberSteps(steps, avatarUrl) {
+async function applyMigrationSteps(steps, avatarUrl) {
+  const result = { completed: 0, failed: 0 };
   for (const step of steps) {
+    if (step.rename === false && result.failed > 0) {
+      console.warn(`[Floor Anchor] migration deferred active root ${step.fileName ?? '(unknown)'} until snapshot retries succeed`);
+      continue;
+    }
     const rename = step.rename !== false;
-    if (!step.fileName || !step.newFileName || (rename && step.newFileName === step.fileName)) {
-      console.warn(`[Floor Anchor] renumber skip: no safe name change for ${step.fileName ?? '(unknown)'}`);
+    const targetFileName = rename ? step.newFileName : step.fileName;
+    if (!step.fileName || !targetFileName || (rename && targetFileName === step.fileName)) {
+      console.warn(`[Floor Anchor] migration skip: no safe name change for ${step.fileName ?? '(unknown)'}`);
+      result.failed += 1;
       continue;
     }
     try {
@@ -498,10 +671,16 @@ async function applyRenumberSteps(steps, avatarUrl) {
         body: JSON.stringify({ ch_name: characters?.[this_chid]?.name ?? '', file_name: step.fileName, avatar_url: avatarUrl }),
         cache: 'no-cache',
       });
-      if (!getResponse.ok) continue;
+      if (!getResponse.ok) {
+        result.failed += 1;
+        continue;
+      }
       const chatJson = await getResponse.json();
       const branch = chatJson?.[0]?.chat_metadata?.st_floor?.branch;
-      if (!branch) continue;
+      if (!branch) {
+        result.failed += 1;
+        continue;
+      }
 
       branch.id = step.newId;
       if (step.newParent === null) {
@@ -517,24 +696,33 @@ async function applyRenumberSteps(steps, avatarUrl) {
         headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
         body: JSON.stringify({
           ch_name: characters?.[this_chid]?.name ?? '',
-          file_name: step.newFileName,
+          file_name: targetFileName,
           chat: chatJson,
           avatar_url: avatarUrl,
           force: true,
         }),
       });
       if (!saveResponse.ok) {
-        console.error(`[Floor Anchor] renumber save failed for ${step.fileName}`);
+        console.error(`[Floor Anchor] migration save failed for ${step.fileName}`);
+        result.failed += 1;
         continue;
       }
-      await fetch('/api/chats/delete', {
-        method: 'POST',
-        headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
-        body: JSON.stringify({ chatfile: `${step.fileName}.jsonl`, avatar_url: avatarUrl }),
-      });
+      // In-place metadata rewrites (legacy active-root migration) deliberately
+      // save to the same file name. Deleting the source in that case would
+      // delete the main chat immediately after saving it.
+      if (shouldDeleteRewriteSource(step)) {
+        const deleteResponse = await fetch('/api/chats/delete', {
+          method: 'POST',
+          headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
+          body: JSON.stringify({ chatfile: `${step.fileName}.jsonl`, avatar_url: avatarUrl }),
+        });
+        if (!deleteResponse.ok) {
+          throw new Error(`migration source delete failed for ${step.fileName}`);
+        }
+      }
 
       if (step.fileName === getCurrentChatId()) {
-        if (rename) characters[this_chid].chat = step.newFileName;
+        if (rename) characters[this_chid].chat = targetFileName;
         // Keep the in-memory metadata in sync so ST's next save does not
         // write the old branch id back into the rewritten file.
         const inMemoryBranch = chat_metadata?.st_floor?.branch;
@@ -548,9 +736,12 @@ async function applyRenumberSteps(steps, avatarUrl) {
         }
         saveCharacterDebounced();
       }
-      console.log(`[Floor Anchor] renumbered ${step.fileName} -> ${step.newFileName} (${step.branchId} -> ${step.newId})`);
+      result.completed += 1;
+      console.log(`[Floor Anchor] migrated ${step.fileName} -> ${targetFileName} (${step.branchId} -> ${step.newId})`);
     } catch (error) {
-      console.error(`[Floor Anchor] renumber failed for ${step.fileName}:`, error);
+      result.failed += 1;
+      console.error(`[Floor Anchor] migration failed for ${step.fileName}:`, error);
     }
   }
+  return result;
 }

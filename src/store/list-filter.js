@@ -66,27 +66,36 @@ export function installChatListFilter() {
 
   const originalFetch = window.fetch;
 
-  window.fetch = async (...args) => {
+  const wrappedFetch = async (...args) => {
     const response = await originalFetch(...args);
     const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
     if (!shouldFilterRequestUrl(url) || !response.ok || hasInternalHeader(args[1])) {
       return response;
     }
     try {
-      const payload = await response.json();
+      // Parse a clone so a malformed/non-JSON response can still be consumed
+      // normally by the host application.
+      const payload = await response.clone().json();
       const filtered = filterChatListPayload(payload, isHiddenEntry);
+      const headers = new Headers(response.headers);
+      // The replacement body has a different byte length and is already
+      // decoded, so transport-level headers from the original are invalid.
+      headers.delete('content-length');
+      headers.delete('content-encoding');
       return new Response(JSON.stringify(filtered), {
         status: response.status,
         statusText: response.statusText,
-        headers: response.headers,
+        headers,
       });
     } catch {
       // Non-JSON or unreadable body: pass through untouched.
       return response;
     }
   };
+  window.fetch = wrappedFetch;
 
   return () => {
-    window.fetch = originalFetch;
+    // Do not clobber a fetch wrapper installed by another extension after us.
+    if (window.fetch === wrappedFetch) window.fetch = originalFetch;
   };
 }
