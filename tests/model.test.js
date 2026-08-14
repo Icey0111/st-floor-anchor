@@ -18,7 +18,6 @@ import {
   getParentId,
   parseBranchId,
   planMigrateLegacyIds,
-  planRenumberAfterDelete,
   replaceBranchIdInFileName,
   ROOT_BRANCH_ID,
   SNAPSHOT_REASONS,
@@ -132,86 +131,6 @@ test('branches: per-parent id counter', () => {
   assert.equal(counter.next('br_000'), 'br_000-6');
   counter.track('br_000-2-3');
   assert.equal(counter.next('br_000-2'), 'br_000-2-4');
-  counter.resetParent('br_000', 1);
-  assert.equal(counter.next('br_000'), 'br_000-2');
-});
-
-test('branches: renumber plan compacts the deleted node sibling bucket', () => {
-  const metas = [
-    { schema: 3, branch: { id: 'br_000', kind: 'active', parent: null, reason: 'root', file_name: 'Seraphina' } },
-    { schema: 3, branch: { id: 'br_000-1', kind: 'snapshot', parent: 'br_000', reason: 'roll', file_name: 'Seraphina - [FA] roll 2026-08-02 br_000-1' } },
-    { schema: 3, branch: { id: 'br_000-2', kind: 'snapshot', parent: 'br_000', reason: 'delete', file_name: 'Seraphina - [FA] delete 2026-08-02 br_000-2' } },
-  ];
-  const plan = planRenumberAfterDelete(metas, 'br_000-1', 'br_000');
-  assert.equal(plan.maxSeq, 1);
-  assert.equal(plan.steps.length, 1);
-  assert.deepEqual(plan.steps[0], {
-    branchId: 'br_000-2',
-    newId: 'br_000-1',
-    fileName: 'Seraphina - [FA] delete 2026-08-02 br_000-2',
-    newFileName: 'Seraphina - [FA] delete 2026-08-02 br_000-1',
-    newParent: 'br_000',
-  });
-});
-
-test('branches: renumber plan updates descendant path prefixes recursively', () => {
-  const metas = [
-    { schema: 3, branch: { id: 'br_000', kind: 'active', parent: null, reason: 'root', file_name: 'root' } },
-    { schema: 3, branch: { id: 'br_000-1', kind: 'snapshot', parent: 'br_000', reason: 'roll', file_name: 'x br_000-1' } },
-    { schema: 3, branch: { id: 'br_000-2', kind: 'snapshot', parent: 'br_000', reason: 'continue', file_name: 'x br_000-2' } },
-    { schema: 3, branch: { id: 'br_000-2-1', kind: 'snapshot', parent: 'br_000-2', reason: 'edit', file_name: 'x br_000-2-1' } },
-  ];
-  const plan = planRenumberAfterDelete(metas, 'br_000-1', 'br_000');
-  assert.equal(plan.maxSeq, 1);
-  assert.deepEqual(plan.steps.map((s) => [s.branchId, s.newId, s.newParent]), [
-    ['br_000-2', 'br_000-1', 'br_000'],
-    ['br_000-2-1', 'br_000-1-1', 'br_000-1'],
-  ]);
-});
-
-test('branches: renumber plan adopts children of the deleted branch', () => {
-  const metas = [
-    { schema: 3, branch: { id: 'br_000', kind: 'active', parent: null, reason: 'root', file_name: 'root' } },
-    { schema: 3, branch: { id: 'br_000-1', kind: 'snapshot', parent: 'br_000', reason: 'roll', file_name: 'x br_000-1' } },
-    { schema: 3, branch: { id: 'br_000-2', kind: 'snapshot', parent: 'br_000', reason: 'continue', file_name: 'x br_000-2' } },
-    { schema: 3, branch: { id: 'br_000-1-1', kind: 'snapshot', parent: 'br_000-1', reason: 'edit', file_name: 'x br_000-1-1' } },
-  ];
-  const plan = planRenumberAfterDelete(metas, 'br_000-1', 'br_000');
-  assert.equal(plan.maxSeq, 2);
-  assert.deepEqual(plan.steps.map((s) => [s.branchId, s.newId, s.newParent]), [
-    ['br_000-1-1', 'br_000-1', 'br_000'], // child of the deleted branch, adopted by the root
-  ]);
-});
-
-test('branches: renumber plan is a no-op for root/invalid/highest deletions', () => {
-  const metas = [
-    { schema: 3, branch: { id: 'br_000', kind: 'active', parent: null, reason: 'root', file_name: 'root' } },
-    { schema: 3, branch: { id: 'br_000-1', kind: 'snapshot', parent: 'br_000', reason: 'roll', file_name: 'x br_000-1' } },
-  ];
-  assert.deepEqual(planRenumberAfterDelete(metas, 'br_000', null), { steps: [], maxSeq: 0, touched: false }); // root
-  assert.deepEqual(planRenumberAfterDelete(metas, 'bogus', null), { steps: [], maxSeq: 0, touched: false }); // invalid
-  const highest = planRenumberAfterDelete(metas, 'br_000-1', 'br_000'); // deleting the only child
-  assert.equal(highest.steps.length, 0);
-  assert.equal(highest.maxSeq, 0); // bucket now empty -> next child restarts at 1
-  assert.equal(highest.touched, true);
-});
-
-test('branches: renumber plan repairs pre-existing gaps and [FA]-suffixed names', () => {
-  const metas = [
-    { schema: 3, branch: { id: 'br_000', kind: 'active', parent: null, reason: 'root', file_name: 'Seraphina' } },
-    { schema: 3, branch: { id: 'br_000-2', kind: 'snapshot', parent: 'br_000', reason: 'delete', file_name: 'Seraphina - delete 2026-08-02 br_000-2 [FA]' } },
-    { schema: 3, branch: { id: 'br_000-3', kind: 'snapshot', parent: 'br_000', reason: 'edit', file_name: 'Seraphina - edit 2026-08-02 br_000-3 [FA]' } },
-  ];
-  const plan = planRenumberAfterDelete(metas, 'br_000-2', 'br_000');
-  assert.equal(plan.maxSeq, 1);
-  assert.equal(plan.steps.length, 1);
-  assert.deepEqual(plan.steps[0], {
-    branchId: 'br_000-3',
-    newId: 'br_000-1',
-    fileName: 'Seraphina - edit 2026-08-02 br_000-3 [FA]',
-    newFileName: 'Seraphina - edit 2026-08-02 br_000-1 [FA]',
-    newParent: 'br_000',
-  });
 });
 
 test('branches: legacy flat ids migrate to the recursive scheme', () => {
@@ -234,12 +153,26 @@ test('branches: legacy flat ids migrate to the recursive scheme', () => {
   assert.equal(planMigrateLegacyIds(migrated).migrated, false);
 });
 
+test('branches: interrupted legacy migration resumes from a br_000 root without id collisions', () => {
+  const metas = [
+    { schema: 3, branch: { id: 'br_000', kind: 'active', parent: null, reason: 'root', file_name: 'Seraphina' } },
+    { schema: 3, branch: { id: 'br_000-1', kind: 'snapshot', parent: 'br_000', reason: 'roll', file_name: 'Seraphina - [FA] roll br_000-1' } },
+    { schema: 3, branch: { id: 'br_202', kind: 'snapshot', parent: 'br_200', reason: 'delete', file_name: 'Seraphina - [FA] delete br_202' } },
+  ];
+  const plan = planMigrateLegacyIds(metas);
+  assert.equal(plan.migrated, true);
+  assert.deepEqual(plan.steps.map((step) => [step.branchId, step.newId, step.newParent]), [
+    ['br_202', 'br_000-2', 'br_000'],
+  ]);
+});
+
 test('panel-index: builds tree, resolves rollback target, serializes', () => {
   const index = PanelIndex.build([
     {
       schema: 3,
       branch: { id: 'br_200', kind: 'active', parent: null, reason: 'root', file_name: 'root.jsonl' },
       preview: '在酒馆门口，一个神秘身影',
+      previewToken: 'root-token',
     },
     {
       schema: 3,
@@ -255,12 +188,14 @@ test('panel-index: builds tree, resolves rollback target, serializes', () => {
   assert.equal(index.resolveFileName('br_201'), 'snapshot_roll.jsonl');
   assert.deepEqual(index.getPath('br_202'), ['br_200', 'br_201', 'br_202']);
   assert.equal(index.get('br_200').preview, '在酒馆门口，一个神秘身影');
+  assert.equal(index.get('br_200').previewToken, 'root-token');
   assert.equal(index.get('br_201').preview, '你要不要来一杯？');
   assert.equal(index.get('br_202').preview, null);
 
   const restored = PanelIndex.fromJSON(index.toJSON());
   assert.deepEqual(restored.getPath('br_202'), ['br_200', 'br_201', 'br_202']);
   assert.equal(restored.get('br_200').preview, '在酒馆门口，一个神秘身影');
+  assert.equal(restored.get('br_200').previewToken, 'root-token');
   assert.equal(restored.get('br_201').preview, '你要不要来一杯？');
   assert.equal(restored.get('br_202').preview, null);
 });
@@ -271,6 +206,16 @@ test('panel-index: orphan detection for missing parent', () => {
   ]);
   assert.deepEqual(index.orphans, ['br_300']);
   assert.deepEqual(index.rootIds, []);
+});
+
+test('panel-index: links children regardless of scan order', () => {
+  const index = PanelIndex.build([
+    { schema: 3, branch: { id: 'br_000-1', kind: 'snapshot', parent: 'br_000', source_floor: 1, reason: 'roll' } },
+    { schema: 3, branch: { id: 'br_000', kind: 'active', parent: null, reason: 'root' } },
+  ]);
+  assert.deepEqual(index.orphans, []);
+  assert.deepEqual(index.getChildren('br_000').map((node) => node.id), ['br_000-1']);
+  assert.deepEqual(index.getPath('br_000-1'), ['br_000', 'br_000-1']);
 });
 
 test('invariants: clean tree passes, broken tree reports B2/B7/B8', () => {
@@ -293,8 +238,18 @@ test('invariants: clean tree passes, broken tree reports B2/B7/B8', () => {
 
 test('invariants: meta validation rejects malformed st_floor', () => {
   assert.deepEqual(validateBranchMeta({ schema: 3, branch: {} }), ['invalid st_floor meta']);
-  assert.deepEqual(validateBranchMeta({ schema: 3, branch: { id: 'ok' } }), []);
-  assert.equal(isValidBranchMeta({ schema: 3, branch: { id: 'ok' } }), true);
+  assert.deepEqual(validateBranchMeta({ schema: 3, branch: { id: 'ok', kind: 'active' } }), ['invalid st_floor meta']);
+  assert.deepEqual(validateBranchMeta({ schema: 3, branch: { id: 'br_000', kind: 'active' } }), []);
+  assert.equal(isValidBranchMeta({ schema: 3, branch: { id: 'br_000', kind: 'active' } }), true);
+});
+
+test('metadata: rejects unsafe branch ids and unknown kinds', () => {
+  assert.equal(readBranchMeta({
+    st_floor: { schema: 3, branch: { id: '<img src=x onerror=alert(1)>', kind: 'snapshot' } },
+  }), null);
+  assert.equal(readBranchMeta({
+    st_floor: { schema: 3, branch: { id: 'br_000-1', kind: 'unexpected' } },
+  }), null);
 });
 
 test('branches: filterMetasToCurrentTree isolates per-chat undo trees', () => {

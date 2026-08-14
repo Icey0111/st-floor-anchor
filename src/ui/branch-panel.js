@@ -3,9 +3,52 @@
  * is the rollback operation (switch chat). Snapshots can be pruned.
  */
 import { parseBranchId } from '../model/branches.js';
+import { canPruneSnapshot } from '../store/mutation-policy.js';
+import { evaluateRetentionPolicy } from '../store/retention-policy.js';
 import { wireTauriMobileLayout } from './mobile-layout.js';
 
-export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage, onClose } = {}) {
+/**
+ * Share one preview request across every row rendered for the same file.
+ * Resolved values remain available to replacement rows; rejected requests are
+ * removed so the next visible row can retry them.
+ */
+export function createPreviewLoadCoordinator() {
+  const loadsByScope = new Map();
+  return {
+    load(scope, key, loader) {
+      let loads = loadsByScope.get(scope);
+      if (!loads) {
+        loads = new Map();
+        loadsByScope.set(scope, loads);
+      }
+      const existing = loads.get(key);
+      if (existing) return existing;
+
+      const pending = Promise.resolve()
+        .then(loader)
+        .then((value) => (typeof value === 'string' ? value : ''))
+        .catch((error) => {
+          if (loads.get(key) === pending) loads.delete(key);
+          throw error;
+        });
+      loads.set(key, pending);
+      return pending;
+    },
+    clear() {
+      loadsByScope.clear();
+    },
+  };
+}
+
+export function createBranchPanel({
+  onRefresh,
+  onSwitch,
+  onDelete,
+  onAddMessage,
+  onLoadPreview,
+  getRetentionPolicy,
+  onClose,
+} = {}) {
   const root = document.createElement('div');
   root.id = 'stfloor-panel';
   root.className = 'stfloor-panel';
@@ -20,10 +63,12 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
       <button class="stfloor-panel-btn stfloor-refresh" title="Rescan branch files">Refresh</button>
       <button class="stfloor-panel-btn stfloor-close" title="Close panel">X</button>
     </div>
+    <div class="stfloor-retention-status"></div>
     <div class="stfloor-panel-body"></div>
   `;
 
   const body = root.querySelector('.stfloor-panel-body');
+  const retentionStatus = root.querySelector('.stfloor-retention-status');
   const goHomeBtn = root.querySelector('.stfloor-panel-gohome');
   root.querySelector('.stfloor-add-message').addEventListener('click', () => showComposer());
   root.querySelector('.stfloor-refresh').addEventListener('click', () => onRefresh?.());
@@ -41,6 +86,8 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
   let currentRootFileName = null;
   let searchTerm = '';
   let currentIndex = null;
+  let previewObserver = null;
+  const previewLoads = createPreviewLoadCoordinator();
   const searchInput = root.querySelector('.stfloor-panel-search');
   searchInput.addEventListener('input', () => {
     searchTerm = searchInput.value;
@@ -169,7 +216,59 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
     }
   }
 
+  function updateRetentionStatus(index) {
+    const summary = evaluateRetentionPolicy(index?.nodes?.values?.() ?? [], getRetentionPolicy?.() ?? {});
+    retentionStatus.classList.toggle('stfloor-retention-due', summary.reminderDue);
+    if (summary.mode === 'remind') {
+      retentionStatus.textContent = summary.reminderDue
+        ? `Cleanup reminder: ${summary.snapshotCount} snapshots (threshold ${summary.reminderLimit}). Nothing was deleted automatically.`
+        : `Retention: ${summary.snapshotCount} snapshots · reminder at ${summary.reminderLimit} · automatic deletion off`;
+    } else {
+      retentionStatus.textContent = `Retention: keep all · ${summary.snapshotCount} snapshots · automatic deletion off`;
+    }
+  }
+
+  function observeLazyPreview(index, node, row, previewInner) {
+    if (!onLoadPreview || !node.fileName || node.preview !== null) return;
+    const scope = currentScope;
+    const key = node.fileName;
+
+    const load = async () => {
+      previewInner.textContent = '…';
+      try {
+        node.preview = await previewLoads.load(scope, key, () => onLoadPreview(key));
+        if (currentIndex === index && currentScope === scope && row.isConnected) {
+          previewInner.textContent = node.preview;
+          const box = previewInner.parentElement;
+          if (box) box.title = node.preview;
+          applyPreviewScroll();
+        }
+      } catch (error) {
+        if (row.isConnected) previewInner.textContent = '';
+        console.warn(`[Floor Anchor] lazy preview failed for ${key}:`, error);
+      }
+    };
+
+    if (previewObserver) {
+      row.__stfloorLoadPreview = load;
+      previewObserver.observe(row);
+    } else {
+      void load();
+    }
+  }
+
   function render(index, scopeKey = currentScope ?? '', rootFileName = currentRootFileName ?? null) {
+    currentIndex = index;
+    previewObserver?.disconnect();
+    previewObserver = typeof IntersectionObserver === 'function'
+      ? new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            previewObserver?.unobserve(entry.target);
+            void entry.target.__stfloorLoadPreview?.();
+          }
+        }, { root: body, rootMargin: '80px 0px' })
+      : null;
     // New chat tree: start with a clean view (search + collapse per chat).
     if (scopeKey !== currentScope) {
       currentScope = scopeKey;
@@ -177,6 +276,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
       searchInput.value = '';
     }
     currentRootFileName = rootFileName;
+    updateRetentionStatus(index);
     // The "back to main root" escape hatch is only useful while the user is
     // on a branch snapshot (the current scope differs from the tree's root).
     goHomeBtn.style.display = currentRootFileName && currentScope && currentScope !== currentRootFileName ? '' : 'none';
@@ -295,14 +395,34 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
         toggle.disabled = true;
       }
 
-      const icon = node.kind === 'snapshot' ? '&#128190;' : '&#128172;'; // 💾 / 💬
+      const icon = node.kind === 'snapshot' ? '💾' : '💬';
       const isActive = !!currentScope && node.fileName === currentScope;
       if (isActive) row.classList.add('stfloor-node-active');
       const label = document.createElement('span');
       label.className = 'stfloor-node-label';
-      label.innerHTML = `${icon} <b>${node.id}</b>${isActive ? ' <span class="stfloor-node-active-badge">current</span>' : ''}` +
-        ` <span class="stfloor-node-reason">${node.reason}</span>` +
-        (node.sourceFloor ? ` <span class="stfloor-node-floor">@floor ${node.sourceFloor}</span>` : '');
+      label.append(`${icon} `);
+      const idLabel = document.createElement('b');
+      idLabel.textContent = node.id;
+      label.append(idLabel);
+      if (isActive) {
+        label.append(' ');
+        const activeBadge = document.createElement('span');
+        activeBadge.className = 'stfloor-node-active-badge';
+        activeBadge.textContent = 'current';
+        label.append(activeBadge);
+      }
+      label.append(' ');
+      const reasonLabel = document.createElement('span');
+      reasonLabel.className = 'stfloor-node-reason';
+      reasonLabel.textContent = node.reason;
+      label.append(reasonLabel);
+      if (node.sourceFloor) {
+        label.append(' ');
+        const floorLabel = document.createElement('span');
+        floorLabel.className = 'stfloor-node-floor';
+        floorLabel.textContent = `@floor ${node.sourceFloor}`;
+        label.append(floorLabel);
+      }
 
       const preview = document.createElement('span');
       preview.className = 'stfloor-node-preview';
@@ -333,11 +453,17 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
       if (node.kind === 'snapshot') {
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'stfloor-node-btn stfloor-delete';
-        deleteBtn.title = 'Prune this snapshot file';
         deleteBtn.innerHTML = '<i class="fa-solid fa-trash-can" aria-hidden="true"></i>';
-        deleteBtn.addEventListener('click', () => {
-          if (node.fileName) showPruneConfirm(node.id, node.fileName, node.parent);
-        });
+        const prunable = canPruneSnapshot(node, hasChildren(node.id));
+        deleteBtn.disabled = !prunable;
+        deleteBtn.title = prunable
+          ? 'Prune this snapshot file'
+          : 'Prune child snapshots first to preserve the branch tree';
+        if (prunable) {
+          deleteBtn.addEventListener('click', () => {
+            if (node.fileName) showPruneConfirm(node.id, node.fileName, node.parent);
+          });
+        }
         actions.append(switchBtn, deleteBtn);
       } else {
         actions.append(switchBtn);
@@ -347,6 +473,7 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
       // buttons on the right).
       row.append(toggle, label, preview, actions);
       list.append(row);
+      observeLazyPreview(index, node, row, previewInner);
     }
 
     body.replaceChildren(list);
@@ -393,25 +520,38 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
     // "取消" below. Step 2 (final): small "返回" on top, second question,
     // big red "最终删除" below - only this button performs the deletion.
     function renderStep(step) {
+      const confirmButton = document.createElement('button');
+      confirmButton.className = step === 1
+        ? 'stfloor-confirm-yes'
+        : 'stfloor-confirm-yes stfloor-confirm-yes-left';
+      confirmButton.title = step === 1
+        ? '确认删除该快照'
+        : '最终确认删除该快照（位置已移动，防止误触）';
+      confirmButton.textContent = '确认删除';
+      const message = document.createElement('div');
+      message.className = 'stfloor-confirm-text';
+      message.textContent = step === 1
+        ? `是否确认删除 ${branchId}？`
+        : `再次确认：删除 ${branchId} 后无法恢复，确定最终删除？`;
+      const cancelButton = document.createElement('button');
+      cancelButton.className = 'stfloor-confirm-cancel';
+      cancelButton.textContent = '取消';
+      panel.replaceChildren(confirmButton, message, cancelButton);
+
       if (step === 1) {
-        panel.innerHTML = `
-          <button class="stfloor-confirm-yes" title="确认删除该快照">确认删除</button>
-          <div class="stfloor-confirm-text">是否确认删除 ${branchId}？</div>
-          <button class="stfloor-confirm-cancel">取消</button>
-        `;
-        panel.querySelector('.stfloor-confirm-yes').addEventListener('click', () => renderStep(2));
-        panel.querySelector('.stfloor-confirm-cancel').addEventListener('click', close);
+        confirmButton.addEventListener('click', () => renderStep(2));
+        cancelButton.addEventListener('click', close);
       } else {
-        panel.innerHTML = `
-          <button class="stfloor-confirm-yes stfloor-confirm-yes-left" title="最终确认删除该快照（位置已移动，防止误触）">确认删除</button>
-          <div class="stfloor-confirm-text">再次确认：删除 ${branchId} 后无法恢复，确定最终删除？</div>
-          <button class="stfloor-confirm-cancel">取消</button>
-        `;
-        panel.querySelector('.stfloor-confirm-yes').addEventListener('click', () => {
+        confirmButton.addEventListener('click', () => {
           close();
-          if (fileName) onDelete?.(branchId, fileName, parentId);
+          if (fileName) {
+            void Promise.resolve(onDelete?.(branchId, fileName, parentId)).catch((error) => {
+              console.error('[Floor Anchor] snapshot prune failed:', error);
+              globalThis.toastr?.error?.('Snapshot deletion failed; no branch ids were changed.');
+            });
+          }
         });
-        panel.querySelector('.stfloor-confirm-cancel').addEventListener('click', close);
+        cancelButton.addEventListener('click', close);
       }
     }
     renderStep(1);
@@ -516,6 +656,11 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
     root.style.display = 'none';
     console.log('[Floor Anchor] panel hidden');
   }
+  function invalidatePreviews() {
+    previewLoads.clear();
+    previewObserver?.disconnect();
+    previewObserver = null;
+  }
   function toggle() {
     if (root.style.display === 'none') show();
     else hide();
@@ -540,5 +685,5 @@ export function createBranchPanel({ onRefresh, onSwitch, onDelete, onAddMessage,
   // Mobile-safe positioning on TauriTavern (no-op elsewhere). Fire-and-forget:
   // cleanup is only needed if the panel is ever torn down.
   void wireTauriMobileLayout(root);
-  return { root, render, show, hide, toggle };
+  return { root, render, show, hide, toggle, invalidatePreviews };
 }

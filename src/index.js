@@ -7,9 +7,9 @@ import {
   switchToBranch,
   scanBranches,
   deleteSnapshotFile,
-  adoptRootIfNeeded,
+  prepareCurrentChatStorage,
   appendCharacterMessage,
-  renumberSnapshotsAfterPrune,
+  loadBranchPreview,
 } from './store/chat-api.js';
 import { chat_metadata, getCurrentChatId } from '/script.js';
 import { installHooks } from './actions/hooks.js';
@@ -17,6 +17,7 @@ import { createBranchPanel } from './ui/branch-panel.js';
 import { installChatListFilter, setActiveSnapshotFileName } from './store/list-filter.js';
 import { readBranchMeta } from './model/metadata.js';
 import { registerSettingsPanel, getStFloorSettings, saveStFloorSettings } from './settings.js';
+import { installChatEventHandlers } from './events/chat-events.js';
 
 console.log('[Floor Anchor] booting...');
 
@@ -40,6 +41,14 @@ try {
   const panel = createBranchPanel({
     onRefresh: () => refreshPanel(),
     onSwitch: (fileName) => switchToBranch(fileName),
+    onLoadPreview: (fileName) => loadBranchPreview(fileName),
+    getRetentionPolicy: () => {
+      const settings = getStFloorSettings();
+      return {
+        mode: settings.retentionMode,
+        reminderLimit: settings.retentionReminderLimit,
+      };
+    },
     onAddMessage: async (text) => {
       try {
         await appendCharacterMessage(text);
@@ -52,20 +61,41 @@ try {
       }
     },
     onDelete: async (branchId, fileName, parentId) => {
-      await deleteSnapshotFile(fileName);
-      await renumberSnapshotsAfterPrune({ deletedBranchId: branchId, deletedParentId: parentId });
+      const deleted = await deleteSnapshotFile(fileName);
+      if (!deleted) {
+        throw new Error(`Failed to delete snapshot file: ${fileName}`);
+      }
       await refreshPanel();
     },
   });
 
+  let refreshInFlight = null;
+  let refreshPending = false;
+
   async function refreshPanel() {
-    const index = await scanBranches();
-    // Scope the panel's per-chat UI state (collapse/search) by chat file and
-    // pass the tree's root file so the panel can offer one-click return to
-    // the main root when the user is on a branch snapshot.
-    const rootNode = [...index.nodes.values()].find((n) => n.kind === 'active' && n.parent === null);
-    panel.render(index, getCurrentChatId() ?? '', rootNode?.fileName ?? null);
-    return index;
+    if (refreshInFlight) {
+      refreshPending = true;
+      return refreshInFlight;
+    }
+
+    refreshInFlight = (async () => {
+      let index;
+      do {
+        refreshPending = false;
+        index = await scanBranches();
+        // Scope the panel's per-chat UI state (collapse/search) by chat file
+        // and pass the tree's root file for one-click return to the main chat.
+        const rootNode = [...index.nodes.values()].find((n) => n.kind === 'active' && n.parent === null);
+        panel.render(index, getCurrentChatId() ?? '', rootNode?.fileName ?? null);
+      } while (refreshPending);
+      return index;
+    })();
+
+    try {
+      return await refreshInFlight;
+    } finally {
+      refreshInFlight = null;
+    }
   }
 
   // --- entry button: between pencil (.mes_edit) and "..." (.extraMesButtonsHint) ---
@@ -153,24 +183,27 @@ try {
   });
 
   // --- events ---
-  function syncActiveSnapshot() {
+  installChatEventHandlers({
+    eventSource,
+    eventTypes,
     // Legacy snapshots (no [FA] marker) that are currently open cannot be
-    // renamed safely; hide them from ST's lists by id until the user leaves
-    // them and the migration renames the file. Derived from chat_metadata on
-    // both events: ST fires CHAT_LOADED then CHAT_CHANGED in the same load,
-    // so a blind reset in CHAT_CHANGED would wipe the id immediately.
-    const meta = readBranchMeta(chat_metadata);
-    setActiveSnapshotFileName(meta?.branch.kind === 'snapshot' ? getCurrentChatId() : null);
-  }
-
-  eventSource.on(eventTypes.CHAT_LOADED, async () => {
-    syncActiveSnapshot();
-    adoptRootIfNeeded();
-    await refreshPanel();
-  });
-  eventSource.on(eventTypes.CHAT_CHANGED, () => {
-    syncActiveSnapshot();
-    void refreshPanel();
+    // renamed safely. Recompute the id on both events because ST emits
+    // CHAT_LOADED then CHAT_CHANGED for the same navigation.
+    readActiveSnapshotFileName: () => {
+      const meta = readBranchMeta(chat_metadata);
+      return meta?.branch.kind === 'snapshot' ? getCurrentChatId() : null;
+    },
+    setActiveSnapshotFileName,
+    prepareCurrentChatStorage,
+    refreshPanel,
+    onPreparationError: (error) => {
+      // A legacy repair failure must not make the panel unavailable. The
+      // event barrier and store queue remain healthy for a later retry.
+      console.error('[Floor Anchor] explicit legacy migration failed:', error);
+    },
+    onRefreshError: (error) => {
+      console.error('[Floor Anchor] chat-change refresh failed:', error);
+    },
   });
   // Messages rendered after our init still need entry buttons.
   eventSource.on(eventTypes.USER_MESSAGE_RENDERED, ensureEntryButtons);
@@ -182,7 +215,12 @@ try {
   });
 
   // Settings section inside ST's extensions panel ("three cubes" icon).
-  registerSettingsPanel({ onChanged: () => void refreshPanel() });
+  registerSettingsPanel({
+    onChanged: () => {
+      panel.invalidatePreviews();
+      void refreshPanel();
+    },
+  });
 
   // --- DOM insertion first: never let a later failure block the entry button ---
   observer.observe(document.body, { childList: true, subtree: true });

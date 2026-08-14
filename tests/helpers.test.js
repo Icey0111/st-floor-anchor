@@ -9,11 +9,151 @@ import {
   filterChatListPayload,
   computeChatPreview,
   parseChatList,
+  parseChatListEntries,
+  getChatListEntryToken,
   metaFromChatJson,
   createSnapshotDedupe,
   computeChatFingerprint,
   createFingerprintStore,
 } from '../src/store/helpers.js';
+import { canPruneSnapshot, shouldDeleteRewriteSource } from '../src/store/mutation-policy.js';
+import { installChatListFilter } from '../src/store/list-filter.js';
+import { createOperationQueue } from '../src/store/operation-queue.js';
+import { createPanelIndexCache } from '../src/store/index-cache.js';
+import {
+  evaluateRetentionPolicy,
+  normalizeRetentionPolicy,
+} from '../src/store/retention-policy.js';
+
+function createMemoryStorage() {
+  const memory = new Map();
+  return {
+    getItem: (key) => (memory.has(key) ? memory.get(key) : null),
+    setItem: (key, value) => memory.set(key, value),
+    removeItem: (key) => memory.delete(key),
+  };
+}
+
+test('store queue: operations run FIFO without overlap', async () => {
+  const queue = createOperationQueue();
+  const events = [];
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+
+  const first = queue.enqueue('first', async () => {
+    events.push('first:start');
+    await firstGate;
+    events.push('first:end');
+    return 1;
+  });
+  const second = queue.enqueue('second', async () => {
+    events.push('second:start');
+    events.push('second:end');
+    return 2;
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(events, ['first:start']);
+  assert.equal(queue.pending, 2);
+  assert.equal(queue.activeLabel, 'first');
+
+  releaseFirst();
+  assert.deepEqual(await Promise.all([first, second]), [1, 2]);
+  await queue.whenIdle();
+  assert.deepEqual(events, ['first:start', 'first:end', 'second:start', 'second:end']);
+  assert.equal(queue.pending, 0);
+  assert.equal(queue.activeLabel, null);
+});
+
+test('store queue: rejection does not poison later operations', async () => {
+  const queue = createOperationQueue();
+  const failed = queue.enqueue('broken', () => { throw new Error('boom'); });
+  const recovered = queue.enqueue('after-failure', () => 'ok');
+
+  await assert.rejects(failed, /boom/);
+  assert.equal(await recovered, 'ok');
+  await queue.whenIdle();
+  assert.equal(queue.pending, 0);
+});
+
+test('retention policy defaults to keep-all and reminders never authorize deletion', () => {
+  assert.deepEqual(normalizeRetentionPolicy({ mode: 'unknown', reminderLimit: 2 }), {
+    mode: 'keep-all',
+    reminderLimit: 10,
+  });
+  const keepAll = evaluateRetentionPolicy([
+    { kind: 'snapshot' },
+    { kind: 'snapshot' },
+  ], { mode: 'keep-all', reminderLimit: 10 });
+  assert.equal(keepAll.reminderDue, false);
+  assert.equal(keepAll.autoDelete, false);
+
+  const reminder = evaluateRetentionPolicy(
+    Array.from({ length: 12 }, () => ({ kind: 'snapshot' })),
+    { mode: 'remind', reminderLimit: 10 },
+  );
+  assert.equal(reminder.reminderDue, true);
+  assert.equal(reminder.excessCount, 3);
+  assert.equal(reminder.autoDelete, false);
+});
+
+test('panel index cache scopes trees, invalidates preview settings, and rejects corruption', () => {
+  const storage = createMemoryStorage();
+  const cache = createPanelIndexCache(storage, 'test.cache');
+  const index = {
+    activeId: 'br_000',
+    rootIds: ['br_000'],
+    orphans: [],
+    nodes: [{
+      id: 'br_000',
+      kind: 'active',
+      parent: null,
+      reason: 'root',
+      fileName: 'chat-a',
+      preview: null,
+      previewToken: 'token-1',
+      children: [],
+    }],
+  };
+  assert.equal(cache.write({
+    avatarUrl: 'a.png',
+    rootFileName: 'chat-a',
+    index,
+    previewKey: 'settings-1',
+    now: 1,
+  }), true);
+  assert.equal(cache.read('a.png', 'chat-a', 'settings-1').index.nodes[0].preview, null);
+  assert.equal(cache.setPreview('a.png', 'chat-a', 'chat-a', 'settings-1', 'hello', 'token-1'), true);
+  assert.equal(cache.read('a.png', 'chat-a', 'settings-1').index.nodes[0].preview, 'hello');
+  assert.equal(cache.read('a.png', 'chat-a', 'settings-2').index.nodes[0].preview, null);
+  assert.equal(cache.read('other.png', 'chat-a', 'settings-1'), null);
+
+  storage.setItem('test.cache', '{broken');
+  assert.equal(cache.read('a.png', 'chat-a', 'settings-1'), null);
+});
+
+test('panel index cache is bounded and invalidation is avatar-scoped', () => {
+  const storage = createMemoryStorage();
+  const cache = createPanelIndexCache(storage, 'bounded.cache', { maxScopes: 2 });
+  const writeTree = (avatarUrl, rootFileName, now) => cache.write({
+    avatarUrl,
+    rootFileName,
+    previewKey: 'p',
+    now,
+    index: {
+      nodes: [{ id: 'br_000', kind: 'active', parent: null, reason: 'root', fileName: rootFileName }],
+    },
+  });
+  writeTree('a.png', 'old', 1);
+  writeTree('a.png', 'new', 2);
+  writeTree('b.png', 'other', 3);
+  assert.equal(cache.read('a.png', 'old', 'p'), null);
+  assert.ok(cache.read('a.png', 'new', 'p'));
+  assert.ok(cache.read('b.png', 'other', 'p'));
+  cache.invalidateAvatar('a.png');
+  assert.equal(cache.read('a.png', 'new', 'p'), null);
+  assert.ok(cache.read('b.png', 'other', 'p'));
+});
 
 test('helpers: snapshot name is unique and safe', () => {
   const name = buildSnapshotName('My Chat: "test"', { reason: 'roll', branchId: 'br_201', now: new Date(2026, 7, 2, 10, 5, 30) });
@@ -73,6 +213,75 @@ test('helpers: chat list filter accepts a custom hidden-entry predicate', () => 
   const isHidden = (entry) => entry.file_name === 'legacy-active-snapshot';
   assert.deepEqual(filterChatListPayload(list, isHidden).map((x) => x.file_name), ['normal-1', 'normal-2']);
   assert.deepEqual(filterChatListPayload({ list }, isHidden).list.map((x) => x.file_name), ['normal-1', 'normal-2']);
+});
+
+test('helpers: chat list filter removes snapshots from keyed-object payloads', () => {
+  const keyed = {
+    root: { file_name: 'My Chat.jsonl' },
+    snapshot: { file_name: 'My Chat - [FA] roll br_000-1.jsonl' },
+    metadata: { count: 2 },
+  };
+  assert.deepEqual(filterChatListPayload(keyed), {
+    root: { file_name: 'My Chat.jsonl' },
+    metadata: { count: 2 },
+  });
+});
+
+test('mutation policy: in-place root rewrites never delete their source', () => {
+  assert.equal(shouldDeleteRewriteSource({
+    fileName: 'Main Chat',
+    newFileName: 'Main Chat',
+    rename: false,
+  }), false);
+  assert.equal(shouldDeleteRewriteSource({
+    fileName: 'snapshot br_200',
+    newFileName: 'snapshot br_000-1',
+    rename: true,
+  }), true);
+  assert.equal(shouldDeleteRewriteSource({
+    fileName: 'same',
+    newFileName: 'same',
+    rename: true,
+  }), false);
+});
+
+test('mutation policy: prune is limited to leaf snapshots', () => {
+  assert.equal(canPruneSnapshot({ kind: 'snapshot' }, false), true);
+  assert.equal(canPruneSnapshot({ kind: 'snapshot' }, true), false);
+  assert.equal(canPruneSnapshot({ kind: 'active' }, false), false);
+});
+
+test('list filter: malformed JSON leaves the original response readable', async (t) => {
+  const previousWindow = globalThis.window;
+  t.after(() => {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  });
+  const originalFetch = async () => new Response('not-json', {
+    status: 200,
+    headers: { 'content-type': 'text/plain' },
+  });
+  globalThis.window = { fetch: originalFetch };
+  const restore = installChatListFilter();
+  const response = await globalThis.window.fetch('/api/chats/recent');
+  assert.equal(await response.text(), 'not-json');
+  restore();
+  assert.equal(globalThis.window.fetch, originalFetch);
+});
+
+test('list filter: restore does not overwrite a later fetch wrapper', (t) => {
+  const previousWindow = globalThis.window;
+  t.after(() => {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  });
+  const originalFetch = async () => new Response('[]');
+  const laterWrapper = async () => new Response('[]');
+  globalThis.window = { fetch: originalFetch };
+  const restore = installChatListFilter();
+  globalThis.window.fetch = laterWrapper;
+  restore();
+  assert.equal(globalThis.window.fetch, laterWrapper);
 });
 
 test('helpers: chat preview uses last non-empty message, collapses and truncates', () => {
@@ -145,6 +354,12 @@ test('helpers: chat preview defaults to 30 chars and honours custom filter block
 test('helpers: parse chat list response', () => {
   const data = { a: { file_name: 'one.jsonl' }, b: { file_name: 'two.jsonl' }, c: {} };
   assert.deepEqual(parseChatList(data), ['one', 'two']);
+  assert.deepEqual(parseChatListEntries(data).map((entry) => entry.fileName), ['one', 'two']);
+  assert.equal(
+    getChatListEntryToken({ file_size: '2 KB', chat_items: 3, last_mes: '2026-08-14', mes: 'hello' }),
+    '["2 KB",3,"2026-08-14","hello"]',
+  );
+  assert.equal(getChatListEntryToken({ file_name: 'one.jsonl' }), null);
   assert.deepEqual(parseChatList(null), []);
   assert.deepEqual(parseChatList({}), []);
 });

@@ -49,10 +49,30 @@ export function buildSnapshotName(mainChatName, { reason, branchId, now = new Da
  * chat file names (without .jsonl).
  */
 export function parseChatList(data) {
+  return parseChatListEntries(data).map((entry) => entry.fileName);
+}
+
+/**
+ * Preserve the useful fields returned by the full character-chat listing.
+ * SillyTavern provides metadata plus cheap file/change information here, so
+ * structural scans do not need an N+1 `/api/chats/get` loop.
+ */
+export function parseChatListEntries(data) {
   if (!data || typeof data !== 'object') return [];
   return Object.values(data)
-    .map((x) => (typeof x?.file_name === 'string' ? x.file_name.replace(/\.jsonl$/i, '') : null))
-    .filter(Boolean);
+    .filter((entry) => entry && typeof entry === 'object' && typeof entry.file_name === 'string')
+    .map((entry) => ({
+      ...entry,
+      fileName: entry.file_name.replace(/\.jsonl$/i, ''),
+    }));
+}
+
+/** Token used to reject stale cached previews after a chat file changes. */
+export function getChatListEntryToken(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const parts = [entry.file_size, entry.chat_items, entry.last_mes, entry.mes];
+  if (parts.every((value) => value === undefined || value === null)) return null;
+  return JSON.stringify(parts.map((value) => value ?? null));
 }
 
 /**
@@ -69,9 +89,13 @@ export function filterChatListPayload(payload, isHidden = isSnapshotEntry) {
   if (payload && typeof payload === 'object') {
     const out = {};
     for (const key of Object.keys(payload)) {
-      out[key] = Array.isArray(payload[key])
-        ? payload[key].filter((entry) => !isHidden(entry))
-        : payload[key];
+      const value = payload[key];
+      // /api/characters/chats may return an object keyed by chat id instead
+      // of an array. Filter direct entry values as well as nested arrays.
+      if (isHidden(value)) continue;
+      out[key] = Array.isArray(value)
+        ? value.filter((entry) => !isHidden(entry))
+        : value;
     }
     return out;
   }

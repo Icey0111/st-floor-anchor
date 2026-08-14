@@ -104,10 +104,6 @@ export function createBranchIdCounter() {
       maxSeqByParent.set(key, seq);
       return `${parentId}-${seq}`;
     },
-    /** Force the observed max for a parent (after renumbering compacts ids). */
-    resetParent(parentId, maxSeq) {
-      maxSeqByParent.set(parentId ?? '__root__', Math.max(0, Number(maxSeq) || 0));
-    },
   };
 }
 
@@ -310,113 +306,84 @@ export function buildSnapshotPlan({
 }
 
 /**
- * Plan how to compact branch ids after a snapshot is pruned (recursive tree
- * numbering). The deleted node's parent bucket is re-numbered sequentially:
- * siblings of the deleted node plus any children of the deleted node
- * (re-parented to the deleted node's own parent). Descendants of every
- * renumbered node get their path prefix updated recursively.
- *
- * Example: br_000 (root), br_000-1, br_000-2, br_000-2-1; delete br_000-1
- *   -> br_000-2 becomes br_000-1, br_000-2-1 becomes br_000-1-1.
- *
- * @param {Array} metas  raw st_floor metas (branch.id / branch.kind /
- *                       branch.parent / branch.file_name)
- * @param {string} deletedBranchId  the pruned branch id (e.g. 'br_000-1')
- * @param {string|null} deletedParentId  parent of the pruned branch
- * @returns {{steps: Array<{branchId, newId, fileName, newFileName, newParent}>, maxSeq: number}}
- */
-export function planRenumberAfterDelete(metas, deletedBranchId, deletedParentId = null) {
-  const deletedParent = deletedParentId ?? getParentId(deletedBranchId);
-  const valid = !!parseBranchId(deletedBranchId) && !!deletedParent;
-  if (!valid) {
-    return { steps: [], maxSeq: 0, touched: false };
-  }
-
-  // Nodes that end up in the deleted node's parent bucket: its siblings
-  // (excluding itself) and its children (adopted by the parent).
-  const affected = (metas ?? [])
-    .filter((meta) => meta?.branch?.kind === 'snapshot' && meta.branch.id !== deletedBranchId)
-    .filter((meta) => {
-      const parent = getParentId(meta.branch.id);
-      return parent === deletedParent || parent === deletedBranchId;
-    })
-    .sort((a, b) => (getLastSegment(a.branch.id) ?? 0) - (getLastSegment(b.branch.id) ?? 0));
-
-  const idMap = new Map(); // old id -> new id
-  let seq = 0;
-  for (const { branch } of affected) {
-    seq += 1;
-    idMap.set(branch.id, `${deletedParent}-${seq}`);
-  }
-
-  // Longest mapped ancestor first, so a descendant matches its closest
-  // renumbered ancestor.
-  const mappedEntries = [...idMap.entries()].sort((a, b) => b[0].length - a[0].length);
-  const steps = [];
-
-  for (const meta of metas ?? []) {
-    const branch = meta?.branch;
-    if (!branch || branch.kind !== 'snapshot' || branch.id === deletedBranchId) continue;
-
-    let mapped = null;
-    for (const [oldId, newId] of mappedEntries) {
-      if (branch.id === oldId || branch.id.startsWith(`${oldId}-`)) {
-        mapped = { oldId, newId };
-        break;
-      }
-    }
-    if (!mapped) continue;
-
-    const newId = branch.id === mapped.oldId
-      ? mapped.newId
-      : `${mapped.newId}${branch.id.slice(mapped.oldId.length)}`;
-    const fileName = typeof branch.file_name === 'string' ? branch.file_name : null;
-    if (newId !== branch.id) {
-      steps.push({
-        branchId: branch.id,
-        newId,
-        fileName,
-        newFileName: fileName ? replaceBranchIdInFileName(fileName, newId) : null,
-        // The new id encodes the path, so its parent is deterministic.
-        newParent: getParentId(newId),
-      });
-    }
-  }
-
-  return { steps, maxSeq: seq, touched: true };
-}
-
-/**
- * Plan the one-time migration from the old flat 200-based ids to the
- * recursive tree scheme: root br_200 -> br_000, snapshots br_201..br_N ->
- * br_000-1..br_000-(N-200) (in ascending id order, closing gaps).
+ * Plan the migration from the old flat 200-based ids to the recursive tree
+ * scheme. The planner also accepts a mixed catalog left by an interrupted
+ * migration (for example a br_000 root plus a remaining br_201 snapshot).
+ * Existing recursive children reserve their ordinals, so a retry keeps the
+ * same target ids instead of colliding with work completed by an earlier run.
  *
  * @returns {{steps: Array<{branchId, newId, fileName, newFileName, newParent}>, migrated: boolean}}
  */
 export function planMigrateLegacyIds(metas) {
-  const root = (metas ?? []).find((meta) => meta?.branch?.kind === 'active');
+  const list = Array.isArray(metas) ? metas : [];
+  const root = list.find((meta) => meta?.branch?.kind === 'active');
   const rootParsed = root ? parseBranchId(root.branch.id) : null;
-  if (!rootParsed || rootParsed.segments.length > 0 || root.branch.id === ROOT_BRANCH_ID) {
+  if (!rootParsed || rootParsed.segments.length > 0) {
     return { steps: [], migrated: false };
   }
-  const rootN = rootParsed.root;
+  const rootIsLegacy = root.branch.id !== ROOT_BRANCH_ID;
 
-  // Flat snapshots (single numeric segment) in ascending order.
-  const snapshots = (metas ?? [])
+  // Flat snapshots are legacy ids. Recursive ids already written by a prior
+  // attempt are used to reserve their top-level ordinals.
+  const snapshots = list
     .filter((meta) => meta?.branch?.kind === 'snapshot')
     .map((meta) => ({ meta, parsed: parseBranchId(meta?.branch?.id) }))
-    .filter((x) => x.parsed && x.parsed.segments.length === 0) // legacy flat ids
+    .filter((x) => x.parsed && x.parsed.segments.length === 0 && x.meta.branch.id !== ROOT_BRANCH_ID)
     .sort((a, b) => Number(a.parsed.root) - Number(b.parsed.root));
+  if (!rootIsLegacy && snapshots.length === 0) return { steps: [], migrated: false };
 
-  const idMap = new Map([[root.branch.id, ROOT_BRANCH_ID]]);
-  let seq = 0;
-  for (const { meta, parsed } of snapshots) {
-    seq += 1;
-    idMap.set(meta.branch.id, `${ROOT_BRANCH_ID}-${seq}`);
+  const migratedSnapshots = list
+    .filter((meta) => meta?.branch?.kind === 'snapshot')
+    .map((meta) => ({ meta, parsed: parseBranchId(meta?.branch?.id) }))
+    .filter((x) => x.parsed?.root === '000' && x.parsed.segments.length === 1);
+  const occupied = new Set(migratedSnapshots.map((x) => x.parsed.segments[0]));
+
+  // A failed source delete leaves both the legacy file and its rewritten
+  // destination in the catalog. Match their file-name lineage so the retry
+  // targets that same destination and can finish deleting the source.
+  const migratedByLineage = new Map();
+  for (const { meta } of migratedSnapshots) {
+    const fileName = meta.branch.file_name;
+    if (typeof fileName !== 'string') continue;
+    const lineage = replaceBranchIdInFileName(fileName, '__branch__');
+    if (!migratedByLineage.has(lineage)) migratedByLineage.set(lineage, meta.branch.id);
+  }
+
+  const idMap = new Map();
+  if (rootIsLegacy) idMap.set(root.branch.id, ROOT_BRANCH_ID);
+  const legacySnapshotIds = new Set(snapshots.map(({ meta }) => meta.branch.id));
+  if (!rootIsLegacy) {
+    for (const { meta } of snapshots) {
+      const parent = meta.branch.parent;
+      const parsedParent = parseBranchId(parent);
+      if (parsedParent?.segments.length === 0 && !legacySnapshotIds.has(parent)) {
+        idMap.set(parent, ROOT_BRANCH_ID);
+      }
+    }
+  }
+  let nextSeq = 1;
+  for (const { meta } of snapshots) {
+    const fileName = meta.branch.file_name;
+    const lineage = typeof fileName === 'string'
+      ? replaceBranchIdInFileName(fileName, '__branch__')
+      : null;
+    const existingId = lineage ? migratedByLineage.get(lineage) : null;
+    if (existingId) {
+      idMap.set(meta.branch.id, existingId);
+      continue;
+    }
+    while (occupied.has(nextSeq)) nextSeq += 1;
+    idMap.set(meta.branch.id, `${ROOT_BRANCH_ID}-${nextSeq}`);
+    occupied.add(nextSeq);
+    nextSeq += 1;
   }
 
   const steps = [];
-  for (const meta of metas ?? []) {
+  // Snapshot rewrites must precede the active-root rewrite. The executor can
+  // then defer the root whenever any snapshot failed, leaving a retry marker
+  // in the catalog instead of committing an unrecoverable half-migration.
+  const ordered = [...list].sort((a, b) => Number(a?.branch?.kind === 'active') - Number(b?.branch?.kind === 'active'));
+  for (const meta of ordered) {
     const branch = meta?.branch;
     if (!branch || typeof branch.id !== 'string') continue;
     const newId = idMap.get(branch.id);
@@ -427,7 +394,9 @@ export function planMigrateLegacyIds(metas) {
       newId,
       fileName,
       newFileName: fileName ? replaceBranchIdInFileName(fileName, newId) : null,
-      newParent: branch.parent ? (idMap.get(branch.parent) ?? branch.parent) : null,
+      newParent: branch.parent
+        ? (idMap.get(branch.parent) ?? (branch.parent === ROOT_BRANCH_ID ? ROOT_BRANCH_ID : branch.parent))
+        : null,
       // The root chat file name carries no branch-id token: its metadata is
       // rewritten in place (rename: false) instead of renaming the file.
       rename: branch.kind !== 'active',

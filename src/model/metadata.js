@@ -10,6 +10,8 @@
  */
 
 export const SCHEMA_VERSION = 3;
+const BRANCH_ID_RE = /^br_\d+(?:-\d+)*$/;
+const BRANCH_KINDS = new Set(['active', 'snapshot']);
 
 export function createBranchMeta({
   id,
@@ -20,11 +22,14 @@ export function createBranchMeta({
   createdAt = null,
   fileName = null,
 }) {
-  if (typeof id !== 'string' || id.length === 0) {
-    throw new TypeError('branch id must be a non-empty string');
+  if (typeof id !== 'string' || !BRANCH_ID_RE.test(id)) {
+    throw new TypeError('branch id must match br_<number>[-<number>...]');
   }
   if (kind !== 'active' && kind !== 'snapshot') {
     throw new TypeError(`invalid branch kind: ${kind}`);
+  }
+  if (parent !== null && (typeof parent !== 'string' || !BRANCH_ID_RE.test(parent))) {
+    throw new TypeError('branch parent must be null or a valid branch id');
   }
 
   const branch = { id, kind, reason };
@@ -47,13 +52,14 @@ export function readBranchMeta(chatMetadata) {
     return null;
   }
   const b = st.branch;
-  if (typeof b.id !== 'string' || b.id.length === 0) return null;
+  if (typeof b.id !== 'string' || !BRANCH_ID_RE.test(b.id)) return null;
+  if (!BRANCH_KINDS.has(b.kind)) return null;
 
   return {
     schema: Number.isInteger(st.schema) ? st.schema : null,
     branch: {
       id: b.id,
-      kind: b.kind === 'snapshot' ? 'snapshot' : 'active',
+      kind: b.kind,
       parent: typeof b.parent === 'string' ? b.parent : null,
       sourceFloor: Number.isInteger(b.source_floor) ? b.source_floor : null,
       reason: typeof b.reason === 'string' ? b.reason : 'root',

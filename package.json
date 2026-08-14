@@ -1,10 +1,10 @@
 {
   "name": "st-floor-anchor",
-  "version": "0.1.0",
+  "version": "0.1.12",
   "private": true,
   "type": "module",
-  "description": "SillyTavern floor-anchor chat extension - data layer (M1)",
+  "description": "SillyTavern floor-level chat snapshots and rollback panel",
   "scripts": {
-    "test": "node --test tests/model.test.js tests/helpers.test.js"
+    "test": "node --import ./tests/fixtures/register-st-loader.mjs --test tests/model.test.js tests/helpers.test.js tests/chat-api.test.js tests/chat-events.test.js tests/branch-panel.test.js"
   }
 }
