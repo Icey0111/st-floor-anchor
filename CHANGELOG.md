@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.13 - 2026-08-16
+
+### 修复（Fixes）
+- **恢复快照扫描兼容性**：修复 v0.1.12 在部分主机（如 TauriTavern）的 `/api/characters/chats` 不返回 `chat_metadata` 时，已有 `[FA]` 快照在面板中消失、新的 roll / delete / edit / rescue 快照刷新后不可见的问题。现在 catalog 缺省元数据时会自动回退到逐个 `/api/chats/get` 读取分支头信息，兼容不支持 catalog 元数据的主机，同时保留支持该字段主机的单请求快速路径。
+- **回归覆盖**：新增 TauriTavern 风格 catalog（无 `chat_metadata`）的 mock host 测试，并在本地 SillyTavern 上通过模拟无元数据 catalog 验证已有快照可重新发现、新 roll 快照可正常显示。
+
 ## v0.1.12 - 2026-08-14
 
 ### 可靠性与性能（Reliability & Performance）

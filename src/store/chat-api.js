@@ -42,6 +42,7 @@ import {
   buildSnapshotName,
   parseChatListEntries,
   getChatListEntryToken,
+  metaFromChatJson,
   computeChatFingerprint,
   createFingerprintStore,
   isSnapshotFileName,
@@ -102,10 +103,10 @@ async function persistMainChat(avatarUrl, fileName, mainChat) {
 }
 
 /**
- * Raw scan: use ST's full character-chat listing, which already includes the
- * first-line metadata and cheap file-change fields. Structural discovery is
- * therefore one request regardless of tree size; full chat reads are left to
- * the lazy preview path.
+ * Raw scan: use ST's character-chat listing for cheap file-change fields and
+ * first-line metadata when the host provides it. Hosts whose catalog omits
+ * chat_metadata (e.g. TauriTavern) fall back to per-file header reads, so
+ * snapshots remain discoverable everywhere.
  */
 async function fetchAllBranchMetas(avatarUrl) {
   const currentFileName = getCurrentChatId() ?? null;
@@ -151,9 +152,37 @@ async function fetchAllBranchMetas(avatarUrl) {
         )
       : '';
     const preview = cachedPreview ?? (Number(entry.chat_items) === 0 ? '' : (catalogPreview || null));
-    const meta = readBranchMeta(entry.chat_metadata ?? null);
+    const catalogMeta = readBranchMeta(entry.chat_metadata ?? null);
+    let meta = catalogMeta;
+
+    // Some hosts (e.g. TauriTavern's /api/characters/chats) do not include
+    // chat_metadata in the catalog even when asked. For entries without
+    // catalog metadata, fall back to the v0.1.11 per-file header read so
+    // snapshots remain discoverable. Hosts that do provide catalog metadata
+    // keep the single-request fast path.
+    const hasCatalogChatMetadata = entry && typeof entry.chat_metadata === 'object' && entry.chat_metadata !== null;
+    if (!hasCatalogChatMetadata) {
+      try {
+        const getResponse = await fetch('/api/chats/get', {
+          method: 'POST',
+          headers: { ...getRequestHeaders(), ...INTERNAL_HEADER },
+          body: JSON.stringify({ ch_name: characters?.[this_chid]?.name ?? '', file_name: name, avatar_url: avatarUrl }),
+          cache: 'no-cache',
+        });
+        if (getResponse.ok) {
+          const chatJson = await getResponse.json();
+          meta = metaFromChatJson(chatJson);
+        }
+      } catch {
+        // A single unreadable file must not fail the whole structural scan.
+        // It will be skipped here and may still be listed as a plain chat if
+        // the catalog contains it.
+      }
+    }
+
     if (meta) {
-      const mainChat = entry.chat_metadata?.main_chat;
+      const mainChat = entry.chat_metadata?.main_chat
+        ?? (catalogMeta ? null : meta.mainChat);
       if (typeof mainChat === 'string' && mainChat) meta.mainChat = mainChat;
       // The list is authoritative after a rename.
       meta.branch.fileName = name;

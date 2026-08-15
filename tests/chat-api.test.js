@@ -297,6 +297,41 @@ test('host API: catalog failure falls back to the last derived index without ful
   assert.deepEqual(calls, ['/api/characters/chats', '/api/characters/chats']);
 });
 
+test('host API: catalog without chat_metadata falls back to per-file header reads', async () => {
+  reset({ avatar: 'no-catalog-meta.png', chatId: 'root' });
+  const snapshot = 'root - [FA] roll br_000-1';
+  // TauriTavern-style list response: summaries only, no chat_metadata.
+  const entries = {
+    root: catalogEntry('root', null, { mes: 'root body' }),
+    child: catalogEntry(snapshot, null, { mes: 'snapshot body' }),
+  };
+  const fullChats = {
+    root: [{ chat_metadata: branchMeta('br_000', 'active', 'root') }],
+    [snapshot]: [{
+      chat_metadata: branchMeta('br_000-1', 'snapshot', snapshot, { parent: 'br_000', mainChat: 'root' }),
+    }],
+  };
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const body = JSON.parse(options.body ?? '{}');
+    calls.push(url);
+    if (url === '/api/characters/chats') return response(true, entries);
+    if (url === '/api/chats/get') {
+      return response(true, fullChats[body.file_name] ?? []);
+    }
+    throw new Error(`unexpected endpoint ${url}`);
+  };
+
+  const index = await scanBranches();
+
+  assert.equal(index.nodes.size, 2);
+  assert.equal(index.get('br_000').kind, 'active');
+  assert.equal(index.get('br_000-1').kind, 'snapshot');
+  assert.equal(index.get('br_000-1').fileName, snapshot);
+  assert.equal(index.get('br_000-1').preview, 'snapshot body');
+  assert.deepEqual(calls.filter((url) => url === '/api/chats/get'), ['/api/chats/get', '/api/chats/get']);
+});
+
 test('host API: lazy preview failure rejects only that read and remains retryable', async () => {
   reset({ avatar: 'preview-failure.png' });
   const snapshot = 'root - [FA] roll br_000-1';
