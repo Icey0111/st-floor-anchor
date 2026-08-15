@@ -5,7 +5,7 @@
 在重roll、删除或编辑之前，插件会自动给当前聊天存一份快照；之后想反悔，随时能在面板里一键切回任意历史版本。快照就是普通的聊天文件（文件名带 `[FA]` 标记），并且会自动从 ST 自带的聊天列表里隐藏，不会把你的聊天列表弄得乱糟糟。
 
 - 语言：[English](README.en.md)
-- 版本：v0.1.13（SillyTavern 1.18+，兼容 TauriTavern 移动端）
+- 版本：v0.1.14（SillyTavern 1.18+，兼容 TauriTavern 移动端）
 - 更新日志：[CHANGELOG.md](CHANGELOG.md)
 
 ## 截图
