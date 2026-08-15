@@ -5,7 +5,7 @@
 Automatically backs up the current chat **before** every regenerate (roll), delete, or edit — then roll back to any historical branch from a panel with one click. Backups are stored as native chat files (marked `[FA]` in the file name) and hidden from SillyTavern's built-in chat lists, so they never clutter your normal chat management.
 
 - Language: [中文](README.md)
-- Version: v0.1.12 (SillyTavern 1.18+, TauriTavern mobile compatible)
+- Version: v0.1.13 (SillyTavern 1.18+, TauriTavern mobile compatible)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## Screenshots

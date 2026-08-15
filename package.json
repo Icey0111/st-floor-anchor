@@ -1,6 +1,6 @@
 {
   "name": "st-floor-anchor",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "type": "module",
   "description": "SillyTavern floor-level chat snapshots and rollback panel",
