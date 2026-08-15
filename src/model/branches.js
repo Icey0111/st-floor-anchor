@@ -214,6 +214,19 @@ export function filterMetasToCurrentTree(metas, currentFileName) {
   const currentMeta = list.find((m) => fileNameOf(m) === currentFile) ?? null;
   if (!currentMeta) return { metas: [], rootMeta: null, currentMeta: null };
 
+  // Fast path for well-formed snapshots: their recorded main_chat already
+  // points at an active root. Only legacy/malformed snapshots need the
+  // parent-chain walk, so typical large trees avoid repeated O(n) scans.
+  const activeRootByFileName = new Map(
+    list
+      .filter((m) => m?.branch?.kind === 'active')
+      .map((m) => [fileNameOf(m), m]),
+  );
+  const directRootOf = (meta) => {
+    const mainChat = typeof meta?.mainChat === 'string' ? meta.mainChat : null;
+    return mainChat && activeRootByFileName.has(mainChat) ? mainChat : null;
+  };
+
   // The tree root file: the current chat itself when it is a root, otherwise
   // the `main_chat` recorded on the snapshot it belongs to. Legacy snapshots
   // may carry a missing or stale `main_chat` (pointing at a renamed-away
@@ -221,7 +234,7 @@ export function filterMetasToCurrentTree(metas, currentFileName) {
   // panel never degrades into a rootless "branch tree".
   const currentRoot = currentMeta.branch.kind === 'active'
     ? (fileNameOf(currentMeta) ?? currentFile)
-    : resolveTreeRootByChain(list, currentMeta);
+    : (directRootOf(currentMeta) ?? resolveTreeRootByChain(list, currentMeta));
 
   if (!currentRoot) return { metas: [], rootMeta: null, currentMeta };
 
@@ -231,7 +244,7 @@ export function filterMetasToCurrentTree(metas, currentFileName) {
   const resolvedRootOf = new Map();
   for (const meta of list) {
     if (meta?.branch?.kind === 'snapshot') {
-      resolvedRootOf.set(meta, resolveTreeRootByChain(list, meta));
+      resolvedRootOf.set(meta, directRootOf(meta) ?? resolveTreeRootByChain(list, meta));
     }
   }
   const treeMetas = list.filter((meta) => {

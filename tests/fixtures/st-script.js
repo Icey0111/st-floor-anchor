@@ -59,6 +59,10 @@ export function saveCharacterDebounced() {
   hostState.characterSaveCount += 1;
 }
 
+export async function saveMetadata() {
+  hostState.metadataSaveCount += 1;
+}
+
 export function saveSettingsDebounced() {
   hostState.settingsSaveCount += 1;
 }

@@ -20,9 +20,9 @@ import {
   getCurrentChatId,
   addOneMessage,
   saveCharacterDebounced,
+  saveMetadata,
 } from '/script.js';
 import { selected_group } from '/scripts/group-chats.js';
-import { saveMetadataDebounced } from '/scripts/extensions.js';
 import { getStFloorSettings } from '../settings.js';
 import { shouldDeleteRewriteSource } from './mutation-policy.js';
 import { createOperationQueue } from './operation-queue.js';
@@ -64,6 +64,41 @@ function getCurrentAvatarUrl() {
 
 function getMainChatName() {
   return getCurrentChatDetails()?.sessionName ?? characters?.[this_chid]?.chat ?? 'chat';
+}
+
+/**
+ * Persist the adopted root metadata without racing ST chat switches.
+ *
+ * ST's own saveMetadataDebounced only guards character/group changes, not chat
+ * file changes, so a pending metadata save from the previous chat could fire
+ * after the user switched to another chat of the same character and save the
+ * wrong chat_metadata under the wrong file name (causing integrity errors).
+ * This plugin-local schedule captures the chat id and skips the save if the
+ * active chat changed before the timer fires.
+ */
+let rootMetadataSaveTimer = null;
+let rootMetadataChatId = null;
+let rootMetadataCharacterId = null;
+
+function scheduleRootMetadataSave() {
+  const chatId = getCurrentChatId();
+  const characterId = this_chid;
+  if (rootMetadataSaveTimer !== null) {
+    clearTimeout(rootMetadataSaveTimer);
+  }
+  rootMetadataChatId = chatId;
+  rootMetadataCharacterId = characterId;
+  rootMetadataSaveTimer = setTimeout(async () => {
+    rootMetadataSaveTimer = null;
+    if (getCurrentChatId() !== rootMetadataChatId || this_chid !== rootMetadataCharacterId) {
+      return;
+    }
+    try {
+      await saveMetadata();
+    } catch (error) {
+      console.error('[Floor Anchor] failed to persist adopted root metadata:', error);
+    }
+  }, 1000);
 }
 
 /**
@@ -233,7 +268,7 @@ function adoptRootIfNeededUnlocked() {
     fileName: characters?.[this_chid]?.chat ?? null,
   });
   chat_metadata.st_floor = meta;
-  saveMetadataDebounced();
+  scheduleRootMetadataSave();
   panelIndexCache.invalidateAvatar(getCurrentAvatarUrl());
   const saved = readBranchMeta(chat_metadata);
   branchIds.track(saved.branch.id);
@@ -400,14 +435,6 @@ async function scanBranchesReadOnly() {
   const { names, metas, previews, previewKey } = catalog;
   if (catalog.failed) {
     return readCachedIndex(avatarUrl, currentFileName) ?? new PanelIndex();
-  }
-
-  // Repair stale membership only in the scan's local objects. Persistence is
-  // reserved for migrateLegacyStorage(), keeping this path observably read-only.
-  for (const meta of metas) {
-    if (meta?.branch?.kind !== 'snapshot') continue;
-    const resolved = resolveTreeRootByChain(metas, meta);
-    if (resolved) meta.mainChat = resolved;
   }
 
   // Per-chat isolation: every ST chat owns its own undo tree; the panel shows
@@ -621,10 +648,19 @@ async function migrateLegacyStorageUnlocked() {
 
   // Persist inferred tree roots after id/name migration. Open files are left
   // untouched and will be repaired on a later chat load.
+  const fileNameOf = (m) => m?.branch?.file_name ?? m?.branch?.fileName ?? null;
+  const activeRootByFileName = new Map(
+    metas
+      .filter((m) => m?.branch?.kind === 'active')
+      .map((m) => [fileNameOf(m), m]),
+  );
   for (const meta of metas) {
     const branch = meta?.branch;
     if (!branch || branch.kind !== 'snapshot') continue;
-    const resolved = resolveTreeRootByChain(metas, meta);
+    const directRoot = typeof meta?.mainChat === 'string' && activeRootByFileName.has(meta.mainChat)
+      ? meta.mainChat
+      : null;
+    const resolved = directRoot ?? resolveTreeRootByChain(metas, meta);
     if (!resolved || resolved === meta.mainChat || !branch.file_name || branch.file_name === currentFileName) continue;
     if (await persistMainChat(avatarUrl, branch.file_name, resolved)) {
       summary.mainChatsRepaired += 1;
